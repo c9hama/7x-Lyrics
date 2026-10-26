@@ -1,6 +1,7 @@
 package com.aalyrics.lyrics
 
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -65,8 +66,14 @@ class LrcLibClient(private val baseUrl: String = "https://lrclib.net") {
                 throw LrcLibHttpException(conn.responseCode, conn.getHeaderField("Retry-After")?.toIntOrNull())
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val arr = JSONArray(body)
-            return List(arr.length()) { LrcLibRecord.fromJson(arr.getJSONObject(it)) }
+            // Mobile networks sometimes answer with a portal or truncated page instead of JSON;
+            // treat that like a network failure rather than letting a JSONException escape.
+            try {
+                val arr = JSONArray(body)
+                return List(arr.length()) { LrcLibRecord.fromJson(arr.getJSONObject(it)) }
+            } catch (e: JSONException) {
+                throw IOException("LRCLIB returned an unexpected response", e)
+            }
         } finally {
             conn.disconnect()
         }

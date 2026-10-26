@@ -46,4 +46,11 @@
     <string name="settings_title">Settings</string>
     <string name="karaoke_title">Karaoke highlight</string>
     <string name="karaoke_summary">Sweeps across the current line as it\'s sung. Estimated from line timing, so it can run slightly ahead or behind on long notes.</string>
+    <string name="last_error_title">Last error (press and hold to copy, send it to me)</string>
+    <string name="clear_error">Clear</string>
+    <string name="keepalive_channel">Android Auto</string>
+    <string name="keepalive_title">Lyrics View is on the car screen</string>
+    <string name="keepalive_text">Keeps lyrics updating while your phone is locked</string>
+    <string name="aa_install_button">Install for Android Auto</string>
+    <string name="aa_install_summary">Reinstalls this app through Android\'s installer so the car shows Lyrics View. Use after installing a new version.</string>
 </resources>

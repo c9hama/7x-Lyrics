@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<automotiveApp>
-    <uses name="media" />
-    <uses name="template" />
+<automotiveApp xmlns:tools="http://schemas.android.com/tools">
+    <!-- media and template entries are switched off in the manifest for now. -->
+    <!-- Legacy Android Auto SDK app types (see LegacyCarService); unknown to lint. -->
+    <uses
+        name="service"
+        tools:ignore="InvalidUsesTagAttribute" />
+    <uses
+        name="projection"
+        tools:ignore="InvalidUsesTagAttribute" />
 </automotiveApp>

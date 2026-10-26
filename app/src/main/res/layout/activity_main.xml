@@ -178,6 +178,52 @@
             android:text="@string/karaoke_summary"
             android:textSize="13sp" />
 
+        <Button
+            android:id="@+id/aa_install"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/aa_install_button" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:alpha="0.6"
+            android:text="@string/aa_install_summary"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:id="@+id/error_section"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/last_error_title"
+                android:textColor="#FFFF8A80"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/error_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/clear_error"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/clear_error" />
+        </LinearLayout>
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

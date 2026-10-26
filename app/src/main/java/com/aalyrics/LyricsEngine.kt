@@ -14,6 +14,7 @@ import com.aalyrics.source.NowPlayingTracker
 import com.aalyrics.source.Upcoming
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
 
 /** Fetches lyrics for the current track and keeps track of which line is being sung. */
@@ -66,6 +68,7 @@ object LyricsEngine {
         private val lines get() = synced?.lines
         val currentLine: String? get() = lines?.getOrNull(lineIndex)?.text?.ifBlank { "♪" }
         val nextLine: String? get() = lines?.getOrNull(lineIndex + 1)?.text?.ifBlank { "♪" }
+        val previousLine: String? get() = lines?.getOrNull(lineIndex - 1)?.text?.ifBlank { "♪" }
 
         /**
          * True when the playing recording's length differs noticeably from the one the lyrics
@@ -85,7 +88,8 @@ object LyricsEngine {
     private const val LENGTH_MISMATCH_MS = 2_000L
     private const val PREFETCH_TAG = "LyricsPrefetch"
 
-    private val scope = MainScope()
+    // Anything unexpected is logged instead of taking the whole app (and the car screen) down.
+    private val scope = MainScope() + CrashLog.handler
     private val _display = MutableStateFlow(Display())
     val display: StateFlow<Display> = _display.asStateFlow()
     private var started = false
@@ -96,6 +100,7 @@ object LyricsEngine {
     fun start(context: Context) {
         if (started) return
         started = true
+        CrashLog.install(context)
         val repo = LyricsRepository(context.applicationContext)
         settings = SyncSettings(context.applicationContext)
 
@@ -166,6 +171,12 @@ object LyricsEngine {
                             continue
                         } catch (e: IOException) {
                             Log.d(PREFETCH_TAG, "offline, stopping until the queue changes")
+                            return@collectLatest
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Prefetching is a nice-to-have: never let it break the app.
+                            CrashLog.record("prefetch", e)
                             return@collectLatest
                         }
                         if (usedNetwork) {

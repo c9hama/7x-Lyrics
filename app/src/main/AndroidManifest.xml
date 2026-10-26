@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
     <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -22,8 +26,10 @@
 
         <!-- Lyrics view: a "navigation" app so it may draw on the car's map surface.
              Its own label/icon keep it apart from the "AA Lyrics" media player in the car launcher. -->
+        <!-- Disabled: real cars block sideloaded Car App Library apps; LegacyCarService replaces it. -->
         <service
             android:name=".car.LyricsCarAppService"
+            android:enabled="false"
             android:exported="true"
             android:icon="@drawable/ic_lyrics_view"
             android:label="@string/lyrics_view_name">
@@ -32,6 +38,40 @@
                 <category android:name="androidx.car.app.category.NAVIGATION" />
             </intent-filter>
         </service>
+
+        <!-- Legacy projection entry (old Android Auto SDK): allowed in real cars with
+             Android Auto's "Unknown sources", unlike the Car App Library service above. -->
+        <service
+            android:name=".car.legacy.LegacyCarService"
+            android:exported="true"
+            android:icon="@drawable/ic_lyrics_view"
+            android:label="@string/lyrics_view_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION" />
+                <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION_OEM" />
+            </intent-filter>
+        </service>
+
+        <!-- Keeps the app from being frozen while the car shows Lyrics View. -->
+        <service
+            android:name=".car.CarKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the Android Auto lyrics display responsive while it is on the car screen" />
+        </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <activity
             android:name=".MainActivity"
@@ -42,8 +82,10 @@
             </intent-filter>
         </activity>
 
+        <!-- AA Lyrics media player: works in real cars with Android Auto's "Unknown sources". -->
         <service
             android:name=".mirror.LyricsMirrorService"
+            android:enabled="false"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />

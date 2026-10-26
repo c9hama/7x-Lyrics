@@ -1,6 +1,9 @@
 package com.aalyrics
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -40,7 +43,18 @@ class MainActivity : ComponentActivity() {
         findViewById<Button>(R.id.grant_access).setOnClickListener {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }
+        CrashLog.install(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         AppSettings.load(this)
+        findViewById<Button>(R.id.aa_install).setOnClickListener { AutoInstaller.reinstallForAndroidAuto(this) }
+        findViewById<Button>(R.id.clear_error).setOnClickListener {
+            CrashLog.clear()
+            showLastError()
+        }
         findViewById<Switch>(R.id.karaoke_switch).apply {
             isChecked = AppSettings.karaoke.value
             setOnCheckedChangeListener { _, checked -> AppSettings.setKaraoke(this@MainActivity, checked) }
@@ -63,8 +77,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showLastError() {
+        val text = CrashLog.read()
+        findViewById<View>(R.id.error_section).visibility = if (text == null) View.GONE else View.VISIBLE
+        findViewById<TextView>(R.id.error_text).text = text.orEmpty()
+    }
+
     override fun onResume() {
         super.onResume()
+        showLastError()
         val granted = NowPlayingTracker.ensureStarted(this)
         accessCard.visibility = if (granted) View.GONE else View.VISIBLE
     }

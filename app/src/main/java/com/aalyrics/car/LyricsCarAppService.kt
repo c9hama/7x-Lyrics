@@ -13,6 +13,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.aalyrics.AppSettings
+import com.aalyrics.CrashLog
 import com.aalyrics.LyricsEngine
 import com.aalyrics.source.NowPlayingTracker
 import kotlinx.coroutines.flow.combine
@@ -31,6 +32,8 @@ class LyricsCarAppService : CarAppService() {
 
 private class LyricsSession : Session() {
     override fun onCreateScreen(intent: Intent): Screen {
+        CrashLog.install(carContext)
+        CarKeepAliveService.start(carContext)
         NowPlayingTracker.ensureStarted(carContext)
         LyricsEngine.start(carContext)
         AppSettings.load(carContext)
@@ -70,11 +73,18 @@ private class LyricsSession : Session() {
             }
 
             override fun onStop(owner: LifecycleOwner) = LyricsView.setOpen(false)
-            override fun onDestroy(owner: LifecycleOwner) = renderer.release()
+            override fun onDestroy(owner: LifecycleOwner) {
+                renderer.release()
+                CarKeepAliveService.stop(carContext)
+            }
         })
-        lifecycleScope.launch {
+        lifecycleScope.launch(CrashLog.handler) {
             combine(NowPlayingTracker.state, LyricsEngine.display, ::Pair).collect { (source, display) ->
-                renderer.update(source, display)
+                try {
+                    renderer.update(source, display)
+                } catch (e: Exception) {
+                    CrashLog.record("renderer.update", e)
+                }
             }
         }
         lifecycleScope.launch { AppSettings.karaoke.collect(renderer::setKaraoke) }

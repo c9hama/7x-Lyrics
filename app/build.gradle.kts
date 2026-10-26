@@ -7,7 +7,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.aalyrics"
+        applicationId = "com.aalyrics.view"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
@@ -34,6 +34,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.car.app:app:1.7.0")
+    // Unreleased Android Auto SDK (legacy projection apps), as used by Fermata Auto.
+    // Not redistributable: fetched locally by tools/fetch-aauto.sh, kept out of git.
+    implementation(files("libs/aauto.aar"))
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     testImplementation("junit:junit:4.13.2")

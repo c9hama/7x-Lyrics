@@ -32,6 +32,7 @@ import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.PathParser
 import androidx.core.graphics.scale
+import com.aalyrics.CrashLog
 import com.aalyrics.LyricsEngine
 import com.aalyrics.R
 import com.aalyrics.lyrics.Lyrics
@@ -574,6 +575,11 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             } else {
                 drawLyrics(canvas, area, headerBottom, footer.top, u, dt) || animating
             }
+        } catch (e: Exception) {
+            // A drawing bug must not crash the app: Android Auto hides a car app that keeps
+            // crashing. Skip this frame and keep going.
+            CrashLog.record("drawFrame", e)
+            animating = false
         } finally {
             s.unlockCanvasAndPost(canvas)
             lastDrawUptime = SystemClock.uptimeMillis()

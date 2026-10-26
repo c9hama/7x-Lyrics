@@ -11,6 +11,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.graphics.scale
 import androidx.media.MediaBrowserServiceCompat
+import com.aalyrics.CrashLog
 import com.aalyrics.LyricsEngine
 import com.aalyrics.R
 import com.aalyrics.car.LyricsView
@@ -20,6 +21,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 
 /**
  * The media app Android Auto sees. It copies the real player's session (art,
@@ -28,11 +30,14 @@ import kotlinx.coroutines.launch
  */
 class LyricsMirrorService : MediaBrowserServiceCompat() {
     private lateinit var session: MediaSessionCompat
-    private val scope = MainScope()
+    private val scope = MainScope() + CrashLog.handler
 
     private var lastPlayback: Any? = Unit
     private var artFor: MediaMetadata? = null
     private var art: Bitmap? = null
+    private var sourceCover: Bitmap? = null
+    private var lyricArt: Bitmap? = null
+    private var lyricArtKey: Any? = null
     private var listedTrack: LyricsEngine.Track? = null
 
     override fun onCreate() {
@@ -134,7 +139,7 @@ class LyricsMirrorService : MediaBrowserServiceCompat() {
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, small)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, meta?.getString(MediaMetadata.METADATA_KEY_ALBUM))
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, meta?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
-            .apply { albumArt(meta)?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) } }
+            .apply { artwork(meta, display, plain)?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) } }
             .build()
     }
 
@@ -142,12 +147,33 @@ class LyricsMirrorService : MediaBrowserServiceCompat() {
      * Metadata is re-sent on every lyric line, so keep the art small (and
      * scaled only once per track) to stay well under the binder size limit.
      */
+    /**
+     * While a lyric line is being sung, the "album art" is a picture of the lyrics (see
+     * [LyricsArt]); otherwise, or while the Lyrics View is open, it's the real cover.
+     */
+    private fun artwork(meta: MediaMetadata?, display: LyricsEngine.Display, plain: Boolean): Bitmap? {
+        val cover = albumArt(meta)
+        val line = display.currentLine
+        if (plain || line == null) return cover
+        val key = Triple(meta, display.lineIndex, display.track)
+        if (key == lyricArtKey) return lyricArt
+        lyricArtKey = key
+        lyricArt = try {
+            LyricsArt.render(sourceCover, display.previousLine, line, display.nextLine)
+        } catch (e: Exception) {
+            CrashLog.record("lyrics art", e)
+            cover
+        }
+        return lyricArt
+    }
+
     private fun albumArt(meta: MediaMetadata?): Bitmap? {
         if (meta === artFor) return art
         artFor = meta
         val src = meta?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: meta?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        sourceCover = src
         art = src?.let {
             val factor = ART_MAX_PX.toFloat() / maxOf(it.width, it.height)
             val scaled = if (factor < 1f) it.scale((it.width * factor).toInt(), (it.height * factor).toInt()) else it
