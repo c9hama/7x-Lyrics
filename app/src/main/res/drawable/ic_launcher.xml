@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#1F1B2E" android:pathData="M0,0h108v108h-108z" />
+    <!-- Music note -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M46,30 L72,25 L72,62 A8,7 0 1,1 66,55.5 L66,36 L52,38.8 L52,70 A8,7 0 1,1 46,63.5 Z" />
+    <!-- Lyric lines -->
+    <path android:fillColor="#FF4E6A" android:pathData="M28,82h52v5h-52z" />
+    <path android:fillColor="#8A84A3" android:pathData="M36,91h36v4h-36z" />
+</vector>
