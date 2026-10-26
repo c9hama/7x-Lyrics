@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.media.MediaMetadata
 import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Handler
@@ -21,6 +22,7 @@ object NowPlayingTracker {
         val controller: MediaController? = null,
         val metadata: MediaMetadata? = null,
         val playback: PlaybackState? = null,
+        val queue: List<QueueTrack> = emptyList(),
     )
 
     /** Picked first when several apps have a session. Add your player's package here. */
@@ -79,6 +81,7 @@ object NowPlayingTracker {
             val cb = object : MediaController.Callback() {
                 override fun onMetadataChanged(metadata: MediaMetadata?) = reselect()
                 override fun onPlaybackStateChanged(state: PlaybackState?) = reselect()
+                override fun onQueueChanged(queue: MutableList<MediaSession.QueueItem>?) = reselect()
                 override fun onSessionDestroyed() {
                     watched.remove(key)?.let { (c, cb) -> c.unregisterCallback(cb) }
                     reselect()
@@ -103,6 +106,11 @@ object NowPlayingTracker {
             controller = chosen,
             metadata = chosen?.metadata,
             playback = chosen?.playbackState,
+            queue = chosen?.queue.orEmpty().mapNotNull { item ->
+                val d = item.description
+                val title = d.title?.toString()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                QueueTrack(item.queueId, title, d.subtitle?.toString().orEmpty())
+            },
         )
     }
 }

@@ -25,7 +25,6 @@ import android.util.Log
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
-import android.view.Choreographer
 import android.view.Surface
 import androidx.car.app.SurfaceCallback
 import androidx.car.app.SurfaceContainer
@@ -36,6 +35,7 @@ import androidx.core.graphics.scale
 import com.aalyrics.LyricsEngine
 import com.aalyrics.R
 import com.aalyrics.lyrics.Lyrics
+import com.aalyrics.lyrics.SweepEstimate
 import com.aalyrics.source.NowPlayingTracker
 import java.util.concurrent.Executors
 import kotlin.math.PI
@@ -77,15 +77,33 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var lastDriftFrameNanos = 0L
     /** Screen strip holding the progress bar and times; wave-only frames repaint just this. */
     private var waveRect: Rect? = null
+    /** Screen area of the line being swept (karaoke highlight); repainted with the wave. */
+    private var sweepRect: Rect? = null
+    /** Start time of each lyric line, to estimate the karaoke sweep. */
+    private var lineStarts: LongArray? = null
+    private var karaoke = false
 
     private val res = context.resources
     private val prefs = context.getSharedPreferences("lyrics_view", Context.MODE_PRIVATE)
     private var textScale = prefs.getFloat(KEY_TEXT_SCALE, 1f)
 
-    private val choreographer = Choreographer.getInstance()
-    private val frameCallback = Choreographer.FrameCallback(::drawFrame)
+    // Frames are paced with a plain main-thread Handler, not Choreographer: Choreographer follows
+    // the phone's display vsync, which the phone may throttle or stop for an app with no visible
+    // window there, freezing the car screen while the app keeps running.
+    private val frameHandler = Handler(Looper.getMainLooper())
+    private val frameRunnable = Runnable { drawFrame(System.nanoTime()) }
     private var frameScheduled = false
     private var frameDelayed = false
+
+    /** Last time a frame reached the screen, and since when the surface has been missing. */
+    private var lastDrawUptime = 0L
+    private var surfaceMissingSince = 0L
+    private val watchdog = object : Runnable {
+        override fun run() {
+            checkStalled()
+            frameHandler.postDelayed(this, WATCHDOG_MS)
+        }
+    }
     private var lastFrameNanos = 0L
 
     private var surface: Surface? = null
@@ -193,11 +211,15 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         density = container.dpi / 160f
         Log.i(TAG, "surface available ${container.width}x${container.height} @${container.dpi}dpi, valid=${surface?.isValid}")
         layoutWidth = -1
+        surfaceMissingSince = 0L
+        startWatchdog()
         requestFrame()
     }
 
     override fun onSurfaceDestroyed(container: SurfaceContainer) {
+        Log.i(TAG, "surface destroyed")
         surface = null
+        surfaceMissingSince = SystemClock.uptimeMillis()
     }
 
     override fun onVisibleAreaChanged(visibleArea: Rect) {
@@ -250,9 +272,18 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     fun release() {
         main.removeCallbacks(exitSyncMode)
         worker.shutdownNow()
-        choreographer.removeFrameCallback(frameCallback)
+        frameHandler.removeCallbacks(frameRunnable)
+        frameHandler.removeCallbacks(watchdog)
+        watchdogRunning = false
         frameScheduled = false
         surface = null
+    }
+
+    /** Turns the estimated karaoke sweep on the current line on or off (phone app setting). */
+    fun setKaraoke(enabled: Boolean) {
+        if (karaoke == enabled) return
+        karaoke = enabled
+        requestFrame()
     }
 
     /** Toggles moving/still background and returns the label of the new mode. */
@@ -292,6 +323,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             scroll = Float.NaN
             emphasis = FloatArray(newRows.size)
         }
+        lineStarts = synced?.map { it.timeMs }?.toLongArray()
         // Row 0 is the intro note, so lyric line i is row i + 1.
         currentRow = if (synced == null) -1 else display.lineIndex + 1
         message = if (synced != null) null else messageFor(display)
@@ -436,17 +468,50 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         needsFullFrame = true
         if (surface == null) return
         if (frameScheduled && !frameDelayed) return
-        choreographer.removeFrameCallback(frameCallback)
+        frameHandler.removeCallbacks(frameRunnable)
         frameScheduled = true
         frameDelayed = false
-        choreographer.postFrameCallback(frameCallback)
+        frameHandler.post(frameRunnable)
     }
 
     private fun requestFrameDelayed(delayMs: Long) {
         if (surface == null || frameScheduled) return
         frameScheduled = true
         frameDelayed = true
-        choreographer.postFrameCallbackDelayed(frameCallback, delayMs)
+        frameHandler.postDelayed(frameRunnable, delayMs)
+    }
+
+    private var watchdogRunning = false
+
+    private fun startWatchdog() {
+        if (watchdogRunning) return
+        watchdogRunning = true
+        frameHandler.postDelayed(watchdog, WATCHDOG_MS)
+    }
+
+    /**
+     * Safety net for a car screen that stops updating: re-kicks the frame loop if frames should be
+     * flowing but none has drawn for a while, and asks the host for a new surface if it took ours
+     * away and never gave one back.
+     */
+    private fun checkStalled() {
+        val now = SystemClock.uptimeMillis()
+        if (surface == null) {
+            if (surfaceMissingSince != 0L && now - surfaceMissingSince > STALL_MS) {
+                Log.w(TAG, "no surface for ${now - surfaceMissingSince}ms; asking the host for a new one")
+                surfaceMissingSince = now
+                onSurfaceLost?.invoke()
+            }
+            return
+        }
+        val playing = playback?.state == PlaybackState.STATE_PLAYING
+        if ((playing || needsFullFrame) && now - lastDrawUptime > STALL_MS) {
+            Log.w(TAG, "no frame for ${now - lastDrawUptime}ms; restarting the frame loop")
+            frameHandler.removeCallbacks(frameRunnable)
+            frameScheduled = false
+            frameDelayed = false
+            requestFrame()
+        }
     }
 
     private fun drawFrame(frameNanos: Long) {
@@ -470,8 +535,12 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val playing = playback?.state == PlaybackState.STATE_PLAYING
         val driftDue = movingBackground && playing && backdrop != null &&
             frameNanos - lastDriftFrameNanos >= DRIFT_FULL_FRAME_MS * 1_000_000
-        val fullFrame = needsFullFrame || driftDue || waveRect == null
-        val dirty = if (fullFrame) null else waveRect?.let { Rect(it) }
+        val partialRegion = when {
+            waveRect != null && sweepRect != null -> Rect(waveRect).apply { union(sweepRect!!) }
+            else -> (waveRect ?: sweepRect)?.let { Rect(it) }
+        }
+        val fullFrame = needsFullFrame || driftDue || partialRegion == null
+        val dirty = if (fullFrame) null else partialRegion
         val canvas = try {
             s.lockCanvas(dirty)
         } catch (e: Exception) {
@@ -479,6 +548,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             if (++lockFailures >= MAX_LOCK_FAILURES) {
                 Log.w(TAG, "surface looks dead after $lockFailures failed locks; asking the host for a new one")
                 surface = null
+                surfaceMissingSince = SystemClock.uptimeMillis()
                 lockFailures = 0
                 onSurfaceLost?.invoke()
             } else {
@@ -506,6 +576,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             }
         } finally {
             s.unlockCanvasAndPost(canvas)
+            lastDrawUptime = SystemClock.uptimeMillis()
         }
 
         when {
@@ -514,7 +585,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
                 // Restart easing from dt = 0 next time instead of jumping.
                 lastFrameNanos = 0L
                 // While playing, the progress wave (and background drift) keep moving.
-                if (playing) requestFrameDelayed(if (waveRect != null) WAVE_FRAME_MS else DRIFT_FULL_FRAME_MS)
+                val moving = waveRect != null || sweepRect != null
+                if (playing) requestFrameDelayed(if (moving) WAVE_FRAME_MS else DRIFT_FULL_FRAME_MS)
             }
         }
     }
@@ -994,6 +1066,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     // ---- Drawing: lyrics -----------------------------------------------------------------------
 
     private fun drawMessage(canvas: Canvas, area: Rect, top: Float, bottom: Float, u: Float) {
+        sweepRect = null
         val text = message ?: return
         linePaint.textSize = 22 * u
         linePaint.color = Color.WHITE // lyric lines leave it tinted
@@ -1045,6 +1118,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val anchor = top + (bottom - top) * ANCHOR
         val fadeZone = (bottom - top) * EDGE_FADE
         val left = area.exactCenterX() - width / 2f
+        sweepRect = null
         val currentLineColor = CoverTones.blend(Color.WHITE, toneLight, CURRENT_LINE_TINT)
 
         canvas.save()
@@ -1060,16 +1134,58 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             // Neighbouring lines take the cover's pastel tone; the line being sung blends towards
             // near-white (keeping a hint of the tone) so it stays the most readable thing on screen.
             linePaint.color = CoverTones.blend(toneLight, currentLineColor, emphasis[i])
-            linePaint.alpha = ((base + (1f - base) * emphasis[i]) * edge * 255).toInt()
+            val alpha = (base + (1f - base) * emphasis[i]) * edge
+            val sweep = sweepProgress(i)
 
             canvas.save()
             canvas.translate(left, lineTop)
             canvas.scale(scales[i], scales[i], width / 2f, 0f)
-            layouts[i].draw(canvas)
+            if (sweep == null) {
+                linePaint.alpha = (alpha * 255).toInt()
+                layouts[i].draw(canvas)
+            } else {
+                // Karaoke: the whole line dimmed, then the sung part bright on top.
+                linePaint.alpha = (alpha * (1f - (1f - SWEEP_DIM) * emphasis[i]) * 255).toInt()
+                layouts[i].draw(canvas)
+                linePaint.alpha = (alpha * 255).toInt()
+                drawSweptPart(canvas, layouts[i], rows[i].length * sweep)
+                sweepRect = Rect(left.toInt(), lineTop.toInt(), (left + width).toInt(), (lineTop + heights[i]).toInt() + 1)
+            }
             canvas.restore()
         }
         canvas.restore()
         return animating
+    }
+
+    /** Sung fraction of the current lyric row, or null when it shouldn't sweep (notes, other rows). */
+    private fun sweepProgress(row: Int): Float? {
+        if (!karaoke || row != currentRow || rows.getOrNull(row) == MUSIC_NOTE) return null
+        val starts = lineStarts ?: return null
+        val line = row - 1 // row 0 is the intro note
+        val start = starts.getOrNull(line) ?: return null
+        val position = positionNow() + LyricsEngine.LEAD_MS + offsetMs
+        return SweepEstimate.progress(rows[row], start, starts.getOrNull(line + 1), position)
+    }
+
+    /** Redraws [layout] clipped to its first [chars] characters, line by line for wrapped text. */
+    private fun drawSweptPart(canvas: Canvas, layout: StaticLayout, chars: Float) {
+        for (j in 0 until layout.lineCount) {
+            val lineStart = layout.getLineStart(j)
+            val lineEnd = layout.getLineEnd(j)
+            if (chars <= lineStart) break
+            val right = if (chars >= lineEnd) {
+                layout.getLineRight(j)
+            } else {
+                val c = chars.toInt().coerceIn(lineStart, lineEnd - 1)
+                val x0 = layout.getPrimaryHorizontal(c)
+                val x1 = if (c + 1 < lineEnd) layout.getPrimaryHorizontal(c + 1) else layout.getLineRight(j)
+                x0 + (x1 - x0) * (chars - c)
+            }
+            canvas.save()
+            canvas.clipRect(layout.getLineLeft(j), layout.getLineTop(j).toFloat(), right, layout.getLineBottom(j).toFloat())
+            layout.draw(canvas)
+            canvas.restore()
+        }
     }
 
     private fun ensureLayouts(width: Int, textSize: Float) {
@@ -1110,9 +1226,14 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         const val BACKDROP_FADE_SEC = 0.7f
         const val PRESS_SEC = 0.22f
         const val LOCK_RETRY_MS = 250L
+        const val WATCHDOG_MS = 1_000L
+        /** A playing screen that hasn't drawn for this long is considered stuck. */
+        const val STALL_MS = 2_000L
         const val TONE_FADE_SEC = 0.6f
         /** How much of the cover tone shows in the current lyric line (0 = pure white). */
         const val CURRENT_LINE_TINT = 0.3f
+        /** Brightness of the not-yet-sung part of the current line, relative to the sung part. */
+        const val SWEEP_DIM = 0.45f
         /** Play/pause pill width relative to its height. */
         const val PILL_ASPECT = 1.8f
         const val MAX_LOCK_FAILURES = 4

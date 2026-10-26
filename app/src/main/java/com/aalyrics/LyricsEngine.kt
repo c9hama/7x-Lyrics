@@ -4,11 +4,16 @@ import android.content.Context
 import android.media.MediaMetadata
 import android.media.session.PlaybackState
 import android.os.SystemClock
+import android.util.Log
+import com.aalyrics.lyrics.LrcLibHttpException
 import com.aalyrics.lyrics.LrcParser
 import com.aalyrics.lyrics.Lyrics
 import com.aalyrics.lyrics.LyricsRepository
 import com.aalyrics.lyrics.SyncSettings
 import com.aalyrics.source.NowPlayingTracker
+import com.aalyrics.source.Upcoming
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,14 +25,22 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Fetches lyrics for the current track and keeps track of which line is being sung. */
 object LyricsEngine {
     /** Show each line slightly early so it's readable as it's sung. */
-    private const val LEAD_MS = 250L
+    const val LEAD_MS = 250L
     private const val RETRY_DELAY_MS = 15_000L
     private const val MAX_ATTEMPTS = 3
     private const val MAX_OFFSET_MS = 30_000L
+
+    /** How many upcoming queue songs to fetch ahead, for stretches without signal. */
+    private const val PREFETCH_COUNT = 5
+    /** Gap between prefetch requests; LRCLIB answers 503 to rapid bursts. */
+    private const val PREFETCH_GAP_MS = 2_500L
+    /** Let the playing song's own lookup go first after a track change. */
+    private const val PREFETCH_START_DELAY_MS = 4_000L
 
     data class Track(val title: String, val artist: String, val durationMs: Long)
 
@@ -70,12 +83,15 @@ object LyricsEngine {
 
     const val SYNC_STEP_MS = 500L
     private const val LENGTH_MISMATCH_MS = 2_000L
+    private const val PREFETCH_TAG = "LyricsPrefetch"
 
     private val scope = MainScope()
     private val _display = MutableStateFlow(Display())
     val display: StateFlow<Display> = _display.asStateFlow()
     private var started = false
     private lateinit var settings: SyncSettings
+    /** The playing song's lookup is running; prefetching waits so it never competes. */
+    @Volatile private var foregroundLookup = false
 
     fun start(context: Context) {
         if (started) return
@@ -99,10 +115,13 @@ object LyricsEngine {
                     delay(400) // duration often arrives a moment after the title
                     val latest = NowPlayingTracker.state.value.metadata?.toTrack() ?: track
                     repeat(MAX_ATTEMPTS) { attempt ->
+                        foregroundLookup = true
                         val status = try {
                             Status.Ready(repo.find(latest.title, latest.artist, latest.durationMs))
                         } catch (e: Exception) {
                             Status.Failed(e.message ?: "Network error")
+                        } finally {
+                            foregroundLookup = false
                         }
                         _display.update { it.copy(track = latest, status = status, lineIndex = -1) }
                         if (status is Status.Ready || attempt == MAX_ATTEMPTS - 1) return@collectLatest
@@ -110,6 +129,8 @@ object LyricsEngine {
                     }
                 }
         }
+
+        scope.launch { prefetchUpcoming(repo) }
 
         scope.launch {
             combine(
@@ -119,6 +140,42 @@ object LyricsEngine {
                 ::Triple,
             ).collectLatest { (playback, status, offset) -> followLines(playback, status, offset) }
         }
+    }
+
+    /**
+     * Keeps lyrics for the next few queued songs on the phone, so they still show where there's
+     * no signal. Paced and backed off politely; restarts whenever the queue or song changes.
+     */
+    private suspend fun prefetchUpcoming(repo: LyricsRepository) {
+        NowPlayingTracker.state
+            .map { Upcoming.next(it.queue, it.playback?.activeQueueItemId ?: -1L, PREFETCH_COUNT) }
+            .distinctUntilChanged()
+            .collectLatest { upcoming ->
+                if (upcoming.isEmpty()) return@collectLatest
+                delay(PREFETCH_START_DELAY_MS)
+                for (track in upcoming) {
+                    var attempts = 0
+                    while (true) {
+                        while (foregroundLookup) delay(500)
+                        val usedNetwork = try {
+                            withContext(Dispatchers.IO) { repo.prefetch(track.title, track.artist) }
+                        } catch (e: LrcLibHttpException) {
+                            if (!e.isRateLimit || ++attempts > 2) break
+                            Log.d(PREFETCH_TAG, "rate limited, waiting ${e.retryAfterSec ?: 30}s")
+                            delay(((e.retryAfterSec ?: 30).coerceIn(2, 60)) * 1000L)
+                            continue
+                        } catch (e: IOException) {
+                            Log.d(PREFETCH_TAG, "offline, stopping until the queue changes")
+                            return@collectLatest
+                        }
+                        if (usedNetwork) {
+                            Log.d(PREFETCH_TAG, "fetched ahead: ${track.title} / ${track.artist}")
+                            delay(PREFETCH_GAP_MS)
+                        }
+                        break
+                    }
+                }
+            }
     }
 
     /** Shifts the current song's lyrics; positive shows them earlier. Saved for next time. */

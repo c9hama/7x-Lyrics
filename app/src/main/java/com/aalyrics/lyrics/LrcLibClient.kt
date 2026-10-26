@@ -41,6 +41,11 @@ data class LrcLibRecord(
     }
 }
 
+/** LRCLIB answered with an error; 429/503 mean "slow down", optionally with a Retry-After. */
+class LrcLibHttpException(val code: Int, val retryAfterSec: Int?) : IOException("LRCLIB HTTP $code") {
+    val isRateLimit get() = code == 429 || code == 503
+}
+
 /** Minimal blocking client for https://lrclib.net. Call from a background thread. */
 class LrcLibClient(private val baseUrl: String = "https://lrclib.net") {
 
@@ -56,7 +61,9 @@ class LrcLibClient(private val baseUrl: String = "https://lrclib.net") {
         conn.readTimeout = 8_000
         conn.setRequestProperty("User-Agent", USER_AGENT)
         try {
-            if (conn.responseCode != 200) throw IOException("LRCLIB HTTP ${conn.responseCode}")
+            if (conn.responseCode != 200) {
+                throw LrcLibHttpException(conn.responseCode, conn.getHeaderField("Retry-After")?.toIntOrNull())
+            }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val arr = JSONArray(body)
             return List(arr.length()) { LrcLibRecord.fromJson(arr.getJSONObject(it)) }

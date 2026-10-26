@@ -16,7 +16,7 @@
     <string name="source_format">Following %s</string>
     <string name="access_explainer">AA Lyrics needs notification access to see what YouTube Music is playing. It doesn\'t read your notifications.</string>
     <string name="grant_access">Grant notification access</string>
-    <string name="aa_hint">In Android Auto, open AA Lyrics from the app launcher instead of YouTube Music. Controls are forwarded to YouTube Music.</string>
+    <string name="aa_hint">In Android Auto, open Lyrics View from the app launcher. Its controls are forwarded to YouTube Music.</string>
     <string name="view_loading">Looking for lyrics…</string>
     <string name="view_failed">Couldn\'t load lyrics. Retrying…</string>
     <string name="view_unsynced">Only unsynced lyrics are available for this song</string>
@@ -43,4 +43,7 @@
     <string name="timing_warning">Lyrics timing may be off for this version</string>
     <string name="timing_adjust">Adjust</string>
     <string name="timing_dismiss">Dismiss</string>
+    <string name="settings_title">Settings</string>
+    <string name="karaoke_title">Karaoke highlight</string>
+    <string name="karaoke_summary">Sweeps across the current line as it\'s sung. Estimated from line timing, so it can run slightly ahead or behind on long notes.</string>
 </resources>

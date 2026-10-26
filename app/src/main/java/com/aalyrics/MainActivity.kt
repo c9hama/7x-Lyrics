@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.Lifecycle
@@ -38,6 +39,11 @@ class MainActivity : ComponentActivity() {
         next = findViewById(R.id.next_line)
         findViewById<Button>(R.id.grant_access).setOnClickListener {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+        AppSettings.load(this)
+        findViewById<Switch>(R.id.karaoke_switch).apply {
+            isChecked = AppSettings.karaoke.value
+            setOnCheckedChangeListener { _, checked -> AppSettings.setKaraoke(this@MainActivity, checked) }
         }
         warningRow = findViewById(R.id.warning_row)
         syncSection = findViewById(R.id.sync_section)

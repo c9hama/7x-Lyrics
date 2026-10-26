@@ -12,6 +12,7 @@ import androidx.car.app.validation.HostValidator
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import com.aalyrics.AppSettings
 import com.aalyrics.LyricsEngine
 import com.aalyrics.source.NowPlayingTracker
 import kotlinx.coroutines.flow.combine
@@ -32,6 +33,7 @@ private class LyricsSession : Session() {
     override fun onCreateScreen(intent: Intent): Screen {
         NowPlayingTracker.ensureStarted(carContext)
         LyricsEngine.start(carContext)
+        AppSettings.load(carContext)
 
         val renderer = LyricsRenderer(carContext)
         // Nav apps must handle "stop navigation"; there's nothing to stop here.
@@ -75,6 +77,7 @@ private class LyricsSession : Session() {
                 renderer.update(source, display)
             }
         }
+        lifecycleScope.launch { AppSettings.karaoke.collect(renderer::setKaraoke) }
         return LyricsScreen(carContext, renderer)
     }
 }
