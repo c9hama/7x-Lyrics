@@ -31,6 +31,7 @@ import androidx.car.app.SurfaceCallback
 import androidx.car.app.SurfaceContainer
 import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.PathParser
 import androidx.core.graphics.scale
 import com.aalyrics.LyricsEngine
 import com.aalyrics.R
@@ -116,6 +117,13 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var thumbShader: BitmapShader? = null
     private var accent = DEFAULT_ACCENT
 
+    // Button/slider colours taken from the cover, faded between songs.
+    private var toneFrom = CoverTones.NEUTRAL
+    private var toneTo = CoverTones.NEUTRAL
+    private var toneFade = 1f
+    private val toneLight get() = CoverTones.blend(toneFrom.light, toneTo.light, toneFade)
+    private val toneOnLight get() = CoverTones.blend(toneFrom.onLight, toneTo.onLight, toneFade)
+
     // Lyrics layout and animation
     private var layouts: List<StaticLayout> = emptyList()
     private var layoutWidth = -1
@@ -173,7 +181,6 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var scrimKey: Pair<Int, Int>? = null
     /** Average brightness (0..1) of the current backdrop; bright art gets a darker scrim. */
     private var backdropLuma = 0f
-    private val iconPath = Path()
     private val shaderMatrix = Matrix()
 
     // ---- SurfaceCallback -------------------------------------------------------------------
@@ -320,15 +327,18 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val token = ++artToken
         if (art == null) {
             applyBackdrop(null)
+            setTones(CoverTones.NEUTRAL)
         } else {
             // A real blur at a decent resolution takes a few ms, so keep it off the frame loop.
             worker.execute {
                 val blurred = makeBackdrop(art)
                 val luma = blurred?.let(::averageLuma) ?: 0f
+                val tones = coverTones(art)
                 main.post {
                     if (token == artToken) {
                         backdropLuma = luma
                         applyBackdrop(blurred)
+                        setTones(tones)
                     }
                 }
             }
@@ -341,6 +351,20 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private fun averageLuma(bmp: Bitmap): Float {
         val c = bmp.scale(1, 1).getPixel(0, 0)
         return ((0.2126f * Color.red(c) + 0.7152f * Color.green(c) + 0.0722f * Color.blue(c)) / 255f)
+    }
+
+    private fun coverTones(art: Bitmap): CoverTones.Tones = runCatching {
+        val small = art.scale(32, 32)
+        val pixels = IntArray(32 * 32).also { small.getPixels(it, 0, 32, 0, 0, 32, 32) }
+        CoverTones.fromPixels(pixels)
+    }.getOrDefault(CoverTones.NEUTRAL)
+
+    private fun setTones(tones: CoverTones.Tones) {
+        if (tones == toneTo && toneFade >= 1f) return
+        toneFrom = CoverTones.Tones(toneLight, toneOnLight)
+        toneTo = tones
+        toneFade = 0f
+        requestFrame()
     }
 
     private fun applyBackdrop(blurred: Bitmap?) {
@@ -467,7 +491,9 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         if (driftDue) lastDriftFrameNanos = frameNanos
         var animating: Boolean
         try {
-            animating = drawBackdrop(canvas, dt, frameNanos, recompose = driftDue)
+            val tonesFading = toneFade < 1f
+            if (tonesFading) toneFade = min(1f, toneFade + dt / TONE_FADE_SEC)
+            animating = drawBackdrop(canvas, dt, frameNanos, recompose = driftDue) || tonesFading
             controlBounds.clear() // re-registered by whatever is drawn this frame
             val headerBottom = drawWarning(canvas, area, u, drawHeader(canvas, area, u))
             val footer = if (syncMode) drawSyncFooter(canvas, area, u, dt) else drawFooter(canvas, area, u, dt)
@@ -706,14 +732,14 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private fun drawPill(canvas: Canvas, rect: RectF, text: String, control: Control?, filled: Boolean) {
         val pressedNow = control != null && pressed == control && pressAmount > 0f
         fillPaint.shader = null
-        fillPaint.color = Color.WHITE
+        fillPaint.color = if (filled) toneLight else Color.WHITE
         fillPaint.alpha = when {
-            filled -> 240
+            filled -> 255
             pressedNow -> 95
             else -> 42
         }
         canvas.drawRoundRect(rect, rect.height() / 2, rect.height() / 2, fillPaint)
-        pillPaint.color = if (filled) ColorUtils.blendARGB(accent, Color.BLACK, 0.6f) else Color.WHITE
+        pillPaint.color = if (filled) toneOnLight else Color.WHITE
         pillPaint.alpha = 255
         val baseline = rect.centerY() - (pillPaint.ascent() + pillPaint.descent()) / 2
         canvas.drawText(text, rect.centerX() - pillPaint.measureText(text) / 2, baseline, pillPaint)
@@ -814,26 +840,26 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         fun pressScale(c: Control) = if (pressed == c) 1f - 0.14f * pressAmount else 1f
 
         val isPlaying = playback?.state == PlaybackState.STATE_PLAYING
-        val prevX = cx - playSize / 2 - spacing - sideSize / 2
-        val nextX = cx + playSize / 2 + spacing + sideSize / 2
+        // Like YouTube Music's car player: a wide pill in the cover's light tone for play/pause,
+        // flanked by outlined skip icons.
+        val pillW = playSize * PILL_ASPECT
+        val prevX = cx - pillW / 2 - spacing - sideSize / 2
+        val nextX = cx + pillW / 2 + spacing + sideSize / 2
 
-        // Play / pause: solid white disc with a dark glyph.
-        val playR = playSize / 2 * pressScale(Control.PLAY_PAUSE)
-        fillPaint.color = Color.WHITE
-        fillPaint.alpha = 240
-        canvas.drawCircle(cx, cy, playR, fillPaint)
-        fillPaint.color = ColorUtils.blendARGB(accent, Color.BLACK, 0.6f)
-        if (isPlaying) drawPause(canvas, cx, cy, playR * 0.78f) else drawPlay(canvas, cx, cy, playR * 0.8f)
+        val ps = pressScale(Control.PLAY_PAUSE)
+        val w = pillW * ps
+        val h = playSize * ps
+        fillPaint.shader = null
+        fillPaint.color = toneLight
+        canvas.drawRoundRect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, h / 2, h / 2, fillPaint)
+        drawSymbol(canvas, if (isPlaying) Symbols.pause else Symbols.play, cx, cy, h * 0.56f, toneOnLight)
 
-        fillPaint.color = Color.WHITE
-        fillPaint.alpha = 225
-        drawSkip(canvas, prevX, cy, sideSize / 2 * pressScale(Control.PREVIOUS), forward = false)
-        fillPaint.alpha = 225
-        drawSkip(canvas, nextX, cy, sideSize / 2 * pressScale(Control.NEXT), forward = true)
+        drawSymbol(canvas, Symbols.skipPrevious, prevX, cy, sideSize * 0.8f * pressScale(Control.PREVIOUS), Color.WHITE, 235)
+        drawSymbol(canvas, Symbols.skipNext, nextX, cy, sideSize * 0.8f * pressScale(Control.NEXT), Color.WHITE, 235)
 
         val touch = 8 * u
         controlBounds[Control.PREVIOUS] = RectF(prevX - sideSize / 2 - touch, cy - sideSize / 2 - touch, prevX + sideSize / 2 + touch, cy + sideSize / 2 + touch)
-        controlBounds[Control.PLAY_PAUSE] = RectF(cx - playSize / 2 - touch, cy - playSize / 2 - touch, cx + playSize / 2 + touch, cy + playSize / 2 + touch)
+        controlBounds[Control.PLAY_PAUSE] = RectF(cx - pillW / 2 - touch, cy - playSize / 2 - touch, cx + pillW / 2 + touch, cy + playSize / 2 + touch)
         controlBounds[Control.NEXT] = RectF(nextX - sideSize / 2 - touch, cy - sideSize / 2 - touch, nextX + sideSize / 2 + touch, cy + sideSize / 2 + touch)
 
         // Progress, YouTube Music style: the played part is a travelling wave that settles flat
@@ -866,7 +892,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             val wavelength = WAVE_LENGTH_DP * u
             val end = playedX - gap
             if (end > left) {
-                strokePaint.alpha = 240
+                strokePaint.color = toneLight
                 if (amplitude < 0.3f) {
                     canvas.drawLine(left, barY, end, barY, strokePaint)
                 } else {
@@ -883,8 +909,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             }
 
             // Thumb: short vertical pill.
-            fillPaint.color = Color.WHITE
-            fillPaint.alpha = 255
+            fillPaint.color = toneLight
             val thumbW = 4.5f * u
             val thumbH = 18 * u
             canvas.drawRoundRect(playedX - thumbW / 2, barY - thumbH / 2, playedX + thumbW / 2, barY + thumbH / 2, thumbW / 2, thumbW / 2, fillPaint)
@@ -922,40 +947,35 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         return waveAmount != target
     }
 
-    private fun drawPlay(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        iconPath.reset()
-        iconPath.moveTo(cx - r * 0.32f, cy - r * 0.5f)
-        iconPath.lineTo(cx + r * 0.52f, cy)
-        iconPath.lineTo(cx - r * 0.32f, cy + r * 0.5f)
-        iconPath.close()
-        canvas.drawPath(iconPath, fillPaint)
+    /** Draws a 960-unit Material Symbols path centred at ([cx], [cy]), [size] px square. */
+    private fun drawSymbol(canvas: Canvas, path: Path, cx: Float, cy: Float, size: Float, color: Int, alpha: Int = 255) {
+        fillPaint.shader = null
+        fillPaint.color = color
+        fillPaint.alpha = alpha
+        canvas.save()
+        canvas.translate(cx - size / 2, cy - size / 2)
+        canvas.scale(size / 960f, size / 960f)
+        canvas.translate(0f, 960f) // Material Symbols use a 0,-960 960x960 viewBox
+        canvas.drawPath(path, fillPaint)
+        canvas.restore()
     }
 
-    private fun drawPause(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        val w = r * 0.2f
-        val h = r * 0.5f
-        val gap = r * 0.14f
-        canvas.drawRoundRect(cx - gap - w, cy - h, cx - gap, cy + h, w / 3, w / 3, fillPaint)
-        canvas.drawRoundRect(cx + gap, cy - h, cx + gap + w, cy + h, w / 3, w / 3, fillPaint)
-    }
+    /**
+     * Material Symbols (Apache 2.0), the icon family YouTube Music's player uses:
+     * rounded play, outlined skip buttons. Pause is built as two equal rounded bars in the same
+     * 960-unit space.
+     */
+    private object Symbols {
+        val play: Path = parse("M320-273v-414q0-17 12-28.5t28-11.5q5 0 10.5 1.5T381-721l326 207q9 6 13.5 15t4.5 19q0 10-4.5 19T707-446L381-239q-5 3-10.5 4.5T360-233q-16 0-28-11.5T320-273Z")
+        val pause: Path = Path().apply {
+            addRoundRect(RectF(240f, -760f, 400f, -200f), 40f, 40f, Path.Direction.CW)
+            addRoundRect(RectF(560f, -760f, 720f, -200f), 40f, 40f, Path.Direction.CW)
+        }
+        val skipNext: Path = parse("M660-240v-480h80v480h-80Zm-440 0v-480l360 240-360 240Zm80-240Zm0 90 136-90-136-90v180Z")
+        val skipPrevious: Path = parse("M220-240v-480h80v480h-80Zm520 0L380-480l360-240v480Zm-80-240Zm0 90v-180l-136 90 136 90Z")
 
-    /** Two chevron triangles and a bar, mirrored for previous. */
-    private fun drawSkip(canvas: Canvas, cx: Float, cy: Float, r: Float, forward: Boolean) {
-        val d = if (forward) 1f else -1f
-        val h = r * 0.42f
-        iconPath.reset()
-        iconPath.moveTo(cx - d * r * 0.55f, cy - h)
-        iconPath.lineTo(cx - d * r * 0.05f, cy)
-        iconPath.lineTo(cx - d * r * 0.55f, cy + h)
-        iconPath.close()
-        iconPath.moveTo(cx - d * r * 0.08f, cy - h)
-        iconPath.lineTo(cx + d * r * 0.42f, cy)
-        iconPath.lineTo(cx - d * r * 0.08f, cy + h)
-        iconPath.close()
-        canvas.drawPath(iconPath, fillPaint)
-        val barW = r * 0.1f
-        val barX = cx + d * r * 0.5f
-        canvas.drawRoundRect(min(barX, barX + d * barW), cy - h, max(barX, barX + d * barW), cy + h, barW / 2, barW / 2, fillPaint)
+        // Even-odd so the outlined triangles keep their hollow centres.
+        private fun parse(data: String) = PathParser.createPathFromPathData(data).apply { fillType = Path.FillType.EVEN_ODD }
     }
 
     private fun positionNow(): Long {
@@ -976,6 +996,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private fun drawMessage(canvas: Canvas, area: Rect, top: Float, bottom: Float, u: Float) {
         val text = message ?: return
         linePaint.textSize = 22 * u
+        linePaint.color = Color.WHITE // lyric lines leave it tinted
         linePaint.alpha = 190
         val width = min(area.width() - 80 * u, 640 * u).toInt().coerceAtLeast(1)
         val layout = StaticLayout.Builder.obtain(text, 0, text.length, linePaint, width)
@@ -1024,6 +1045,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val anchor = top + (bottom - top) * ANCHOR
         val fadeZone = (bottom - top) * EDGE_FADE
         val left = area.exactCenterX() - width / 2f
+        val currentLineColor = CoverTones.blend(Color.WHITE, toneLight, CURRENT_LINE_TINT)
 
         canvas.save()
         canvas.clipRect(area.left.toFloat(), top, area.right.toFloat(), bottom)
@@ -1035,6 +1057,9 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             val base = (NEIGHBOUR_ALPHA - FALLOFF_ALPHA * (distance - 1)).coerceAtLeast(MIN_ALPHA)
             val centre = lineTop + heights[i] / 2
             val edge = (min(centre - top, bottom - centre) / fadeZone).coerceIn(0f, 1f)
+            // Neighbouring lines take the cover's pastel tone; the line being sung blends towards
+            // near-white (keeping a hint of the tone) so it stays the most readable thing on screen.
+            linePaint.color = CoverTones.blend(toneLight, currentLineColor, emphasis[i])
             linePaint.alpha = ((base + (1f - base) * emphasis[i]) * edge * 255).toInt()
 
             canvas.save()
@@ -1085,6 +1110,11 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         const val BACKDROP_FADE_SEC = 0.7f
         const val PRESS_SEC = 0.22f
         const val LOCK_RETRY_MS = 250L
+        const val TONE_FADE_SEC = 0.6f
+        /** How much of the cover tone shows in the current lyric line (0 = pure white). */
+        const val CURRENT_LINE_TINT = 0.3f
+        /** Play/pause pill width relative to its height. */
+        const val PILL_ASPECT = 1.8f
         const val MAX_LOCK_FAILURES = 4
         /** Sync controls close themselves after this long without a tap. */
         const val SYNC_IDLE_MS = 12_000L
