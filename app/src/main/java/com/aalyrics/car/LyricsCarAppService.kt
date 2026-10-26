@@ -54,6 +54,11 @@ private class LyricsSession : Session() {
             }
         }
         renderer.onSeek = { positionMs -> NowPlayingTracker.state.value.controller?.transportControls?.seekTo(positionMs) }
+        renderer.onSurfaceLost = {
+            val appManager = carContext.getCarService(AppManager::class.java)
+            appManager.setSurfaceCallback(null)
+            appManager.setSurfaceCallback(renderer)
+        }
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 // Register on every start, not just once: when Android Auto revives the app on

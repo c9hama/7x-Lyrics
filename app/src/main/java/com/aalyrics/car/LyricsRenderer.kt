@@ -64,6 +64,19 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     /** Called with a position in ms when the progress bar is tapped. */
     var onSeek: ((Long) -> Unit)? = null
 
+    /**
+     * Called when the surface stopped accepting frames without the host saying so (seen after
+     * the car display reconnects while the app keeps running). Re-registering asks for a new one.
+     */
+    var onSurfaceLost: (() -> Unit)? = null
+    private var lockFailures = 0
+
+    /** Something other than the progress wave changed, so the next frame repaints everything. */
+    private var needsFullFrame = true
+    private var lastDriftFrameNanos = 0L
+    /** Screen strip holding the progress bar and times; wave-only frames repaint just this. */
+    private var waveRect: Rect? = null
+
     private val res = context.resources
     private val prefs = context.getSharedPreferences("lyrics_view", Context.MODE_PRIVATE)
     private var textScale = prefs.getFloat(KEY_TEXT_SCALE, 1f)
@@ -135,6 +148,15 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
     private val scrimPaint = Paint().apply { isDither = true }
     private val layerPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val wavePath = Path()
+    private var wavePhase = 0f
+    /** 1 while playing (full wave), eases to 0 (flat line) when paused. */
+    private var waveAmount = 0f
     private val driftScrimPaint = Paint().apply { isDither = true }
     private var driftScrimKey: Pair<Int, Int>? = null
     private var stillCache: Bitmap? = null
@@ -142,6 +164,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var stillDirty = true
     private val driftMatrix = Matrix()
     private var driftBuffer: Bitmap? = null
+    private var movingCache: Bitmap? = null
+    private var movingCacheCanvas: Canvas? = null
     private var driftCanvas: Canvas? = null
     private var driftSeconds = 0f
     private var lastDriftNanos = 0L
@@ -156,6 +180,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
 
     override fun onSurfaceAvailable(container: SurfaceContainer) {
         surface = container.surface
+        lockFailures = 0
         surfaceWidth = container.width
         surfaceHeight = container.height
         density = container.dpi / 160f
@@ -384,6 +409,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     // ---- Frame loop ------------------------------------------------------------------------
 
     private fun requestFrame() {
+        needsFullFrame = true
         if (surface == null) return
         if (frameScheduled && !frameDelayed) return
         choreographer.removeFrameCallback(frameCallback)
@@ -415,16 +441,33 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         // Software canvas, as in Google's Car App samples: if the host's surface can't be
         // connected (e.g. still attached elsewhere) this throws instead of aborting the process
         // like lockHardwareCanvas() does.
+        // Most frames while playing only move the progress wave: repaint just that strip and let
+        // the surface keep the rest. Full frames happen on real changes and for the drift (10fps).
+        val playing = playback?.state == PlaybackState.STATE_PLAYING
+        val driftDue = movingBackground && playing && backdrop != null &&
+            frameNanos - lastDriftFrameNanos >= DRIFT_FULL_FRAME_MS * 1_000_000
+        val fullFrame = needsFullFrame || driftDue || waveRect == null
+        val dirty = if (fullFrame) null else waveRect?.let { Rect(it) }
         val canvas = try {
-            s.lockCanvas(null)
+            s.lockCanvas(dirty)
         } catch (e: Exception) {
-            Log.w(TAG, "lockCanvas failed, retrying", e)
-            requestFrameDelayed(LOCK_RETRY_MS)
+            if (lockFailures == 0) Log.w(TAG, "lockCanvas failed, retrying", e)
+            if (++lockFailures >= MAX_LOCK_FAILURES) {
+                Log.w(TAG, "surface looks dead after $lockFailures failed locks; asking the host for a new one")
+                surface = null
+                lockFailures = 0
+                onSurfaceLost?.invoke()
+            } else {
+                requestFrameDelayed(LOCK_RETRY_MS)
+            }
             return
         }
+        lockFailures = 0
+        needsFullFrame = false
+        if (driftDue) lastDriftFrameNanos = frameNanos
         var animating: Boolean
         try {
-            animating = drawBackdrop(canvas, dt, frameNanos)
+            animating = drawBackdrop(canvas, dt, frameNanos, recompose = driftDue)
             controlBounds.clear() // re-registered by whatever is drawn this frame
             val headerBottom = drawWarning(canvas, area, u, drawHeader(canvas, area, u))
             val footer = if (syncMode) drawSyncFooter(canvas, area, u, dt) else drawFooter(canvas, area, u, dt)
@@ -444,13 +487,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             else -> {
                 // Restart easing from dt = 0 next time instead of jumping.
                 lastFrameNanos = 0L
-                val playing = playback?.state == PlaybackState.STATE_PLAYING
-                when {
-                    // 20fps is plenty for a drift this slow and keeps the CPU cost low.
-                    playing && movingBackground && backdrop != null -> requestFrameDelayed(DRIFT_FRAME_MS)
-                    // Keep the progress bar ticking while music plays.
-                    playing -> requestFrameDelayed(PROGRESS_TICK_MS)
-                }
+                // While playing, the progress wave (and background drift) keep moving.
+                if (playing) requestFrameDelayed(if (waveRect != null) WAVE_FRAME_MS else DRIFT_FULL_FRAME_MS)
             }
         }
     }
@@ -481,24 +519,40 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
      * slowly rotating and drifting at its own pace, composited into a 1/4-resolution buffer
      * and stretched to the screen. Layers always cover the buffer at any angle, so no edges show.
      */
-    private fun drawMovingBackdrop(canvas: Canvas, previousAlpha: Float) {
+    private fun drawMovingBackdrop(canvas: Canvas, previousAlpha: Float, recompose: Boolean) {
         val bw = max(1, surfaceWidth / DRIFT_DOWNSCALE)
         val bh = max(1, surfaceHeight / DRIFT_DOWNSCALE)
+        var fresh = false
         val buffer = driftBuffer?.takeIf { it.width == bw && it.height == bh }
             ?: Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).also {
                 driftBuffer = it
                 driftCanvas = Canvas(it)
+                fresh = true
             }
         val bc = driftCanvas ?: return
+        val cache = movingCache?.takeIf { it.width == surfaceWidth && it.height == surfaceHeight }
+            ?: Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888).also {
+                movingCache = it
+                movingCacheCanvas = Canvas(it)
+                fresh = true
+            }
+        // Stretching the small buffer to full screen is the expensive part, so do it only when
+        // the drift actually moves (or during a crossfade); every other frame copies the result.
+        if (recompose || fresh || backdropFade < 1f) {
+            composeDrift(bc, previousAlpha, bw, bh)
+            bitmapPaint.alpha = 255
+            movingCacheCanvas?.drawBitmap(buffer, null, RectF(0f, 0f, surfaceWidth.toFloat(), surfaceHeight.toFloat()), bitmapPaint)
+        }
+        canvas.drawBitmap(cache, 0f, 0f, null)
+    }
+
+    private fun composeDrift(bc: Canvas, previousAlpha: Float, bw: Int, bh: Int) {
         bc.drawColor(ColorUtils.blendARGB(accent, Color.BLACK, 0.6f))
         previousBackdrop?.let { drawDriftLayers(bc, it, previousAlpha, bw, bh) }
         backdrop?.let { drawDriftLayers(bc, it, backdropFade, bw, bh) }
         // The scrim is a smooth gradient, so drawing it at 1/4 resolution looks identical and
         // leaves a single full-screen bitmap draw per frame.
         bc.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), scrimFor(bh, driftScrimPaint, driftScrimKey).also { driftScrimKey = it.second }.first)
-
-        bitmapPaint.alpha = 255
-        canvas.drawBitmap(buffer, null, RectF(0f, 0f, surfaceWidth.toFloat(), surfaceHeight.toFloat()), bitmapPaint)
     }
 
     private fun drawDriftLayers(bc: Canvas, art: Bitmap, alpha: Float, bw: Int, bh: Int) {
@@ -523,15 +577,15 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         }
     }
 
-    private fun drawBackdrop(canvas: Canvas, dt: Float, frameNanos: Long): Boolean {
+    private fun drawBackdrop(canvas: Canvas, dt: Float, frameNanos: Long, recompose: Boolean): Boolean {
         val w = surfaceWidth.toFloat()
         val h = surfaceHeight.toFloat()
         val animating = backdropFade < 1f
         if (animating) backdropFade = min(1f, backdropFade + dt / BACKDROP_FADE_SEC)
         val previousAlpha = if (backdrop == null) 1f - backdropFade else 1f
         if (movingBackground && (backdrop != null || previousBackdrop != null)) {
-            advanceDrift(frameNanos)
-            drawMovingBackdrop(canvas, previousAlpha)
+            if (recompose) advanceDrift(frameNanos)
+            drawMovingBackdrop(canvas, previousAlpha, recompose)
             if (backdropFade >= 1f) previousBackdrop = null
             return animating
         }
@@ -675,6 +729,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     /** Earlier / [offset · tap to reset] / Later / Done, in place of the playback footer. */
     private fun drawSyncFooter(canvas: Canvas, area: Rect, u: Float, dt: Float): Footer {
         progressBounds = null
+        waveRect = null
         if (pressAmount > 0f) pressAmount = max(0f, pressAmount - dt / PRESS_SEC)
 
         val earlier = res.getString(R.string.sync_earlier)
@@ -755,6 +810,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val cy = area.bottom - 16 * u - playSize / 2
 
         if (pressAmount > 0f) pressAmount = max(0f, pressAmount - dt / PRESS_SEC)
+        val waving = advanceWave(dt)
         fun pressScale(c: Control) = if (pressed == c) 1f - 0.14f * pressAmount else 1f
 
         val isPlaying = playback?.state == PlaybackState.STATE_PLAYING
@@ -780,39 +836,90 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         controlBounds[Control.PLAY_PAUSE] = RectF(cx - playSize / 2 - touch, cy - playSize / 2 - touch, cx + playSize / 2 + touch, cy + playSize / 2 + touch)
         controlBounds[Control.NEXT] = RectF(nextX - sideSize / 2 - touch, cy - sideSize / 2 - touch, nextX + sideSize / 2 + touch, cy + sideSize / 2 + touch)
 
-        // Progress: elapsed ─────●───── total
+        // Progress, YouTube Music style: the played part is a travelling wave that settles flat
+        // when paused, the rest is a dim straight line, with a small vertical thumb between.
+        //   ∿∿∿∿∿∿∿∿∿|──────────────
+        //   1:15                 3:34
         var footerTop = cy - playSize / 2 - 10 * u
         progressBounds = null
+        waveRect = null
         if (durationMs > 0) {
-            val barY = cy - playSize / 2 - 18 * u
             timePaint.textSize = 12.5f * u
-            val barWidth = min(area.width() * 0.52f, 440 * u)
+            val timeBaseline = cy - playSize / 2 - 10 * u
+            val barY = timeBaseline + timePaint.ascent() - 12 * u
+            val barWidth = min(area.width() * 0.7f, 620 * u)
             val left = cx - barWidth / 2
             val right = cx + barWidth / 2
             val fraction = (positionNow().toFloat() / durationMs).coerceIn(0f, 1f)
-            val thickness = 4 * u
+            val playedX = left + barWidth * fraction
+            val stroke = 3.2f * u
+            val gap = 7 * u
 
+            // Unplayed: dim straight line after a small gap.
+            strokePaint.strokeWidth = stroke
+            strokePaint.color = Color.WHITE
+            strokePaint.alpha = 77
+            if (right > playedX + gap) canvas.drawLine(playedX + gap, barY, right, barY, strokePaint)
+
+            // Played: sine wave whose height eases with play/pause.
+            val amplitude = WAVE_AMPLITUDE_DP * u * waveAmount
+            val wavelength = WAVE_LENGTH_DP * u
+            val end = playedX - gap
+            if (end > left) {
+                strokePaint.alpha = 240
+                if (amplitude < 0.3f) {
+                    canvas.drawLine(left, barY, end, barY, strokePaint)
+                } else {
+                    wavePath.reset()
+                    val step = 2 * u
+                    var x = left
+                    wavePath.moveTo(x, barY + amplitude * sin(2f * PI.toFloat() * (x - left) / wavelength - wavePhase))
+                    while (x < end) {
+                        x = min(x + step, end)
+                        wavePath.lineTo(x, barY + amplitude * sin(2f * PI.toFloat() * (x - left) / wavelength - wavePhase))
+                    }
+                    canvas.drawPath(wavePath, strokePaint)
+                }
+            }
+
+            // Thumb: short vertical pill.
             fillPaint.color = Color.WHITE
-            fillPaint.alpha = 60
-            canvas.drawRoundRect(left, barY - thickness / 2, right, barY + thickness / 2, thickness, thickness, fillPaint)
-            fillPaint.alpha = 230
-            canvas.drawRoundRect(left, barY - thickness / 2, left + barWidth * fraction, barY + thickness / 2, thickness, thickness, fillPaint)
             fillPaint.alpha = 255
-            canvas.drawCircle(left + barWidth * fraction, barY, 6.5f * u, fillPaint)
+            val thumbW = 4.5f * u
+            val thumbH = 18 * u
+            canvas.drawRoundRect(playedX - thumbW / 2, barY - thumbH / 2, playedX + thumbW / 2, barY + thumbH / 2, thumbW / 2, thumbW / 2, fillPaint)
 
-            // Generous touch target: the whole row, not just the 4dp line.
+            // Generous touch target: the whole row, not just the thin line.
             progressLeft = left
             progressWidth = barWidth
-            progressBounds = RectF(left - 12 * u, barY - 16 * u, right + 12 * u, barY + 16 * u)
+            progressBounds = RectF(left - 12 * u, barY - 20 * u, right + 12 * u, barY + 16 * u)
 
-            timePaint.alpha = 170
-            val textY = barY - (timePaint.ascent() + timePaint.descent()) / 2
-            val elapsed = formatTime(positionNow())
-            canvas.drawText(elapsed, left - 12 * u - timePaint.measureText(elapsed), textY, timePaint)
-            canvas.drawText(formatTime(durationMs), right + 12 * u, textY, timePaint)
-            footerTop = barY - 16 * u
+            timePaint.alpha = 200
+            canvas.drawText(formatTime(positionNow()), left, timeBaseline, timePaint)
+            val total = formatTime(durationMs)
+            canvas.drawText(total, right - timePaint.measureText(total), timeBaseline, timePaint)
+            footerTop = barY - 20 * u
+            waveRect = Rect(
+                (left - 16 * u).toInt(), (barY - 14 * u).toInt(),
+                (right + 16 * u).toInt(), (timeBaseline + timePaint.descent() + 4 * u).toInt(),
+            )
         }
-        return Footer(footerTop, pressAmount > 0f)
+        return Footer(footerTop, pressAmount > 0f || waving)
+    }
+
+    /**
+     * Moves the progress wave along while playing and eases its height to flat when paused.
+     * Returns true while the wave is still settling (the steady travel is paced separately).
+     */
+    private fun advanceWave(dt: Float): Boolean {
+        val playing = playback?.state == PlaybackState.STATE_PLAYING
+        // dt is 0 on the first frame after idling; use the paced frame interval instead.
+        val step = if (dt > 0f) dt else if (playing) WAVE_FRAME_MS / 1000f else 0f
+        if (playing) wavePhase = (wavePhase + step * WAVE_SPEED * 2f * PI.toFloat()) % (2f * PI.toFloat())
+        val target = if (playing) 1f else 0f
+        waveAmount += (target - waveAmount) * (1f - exp(-step * 6f))
+        if (abs(target - waveAmount) < 0.01f) waveAmount = target
+        return waveAmount != target
     }
 
     private fun drawPlay(canvas: Canvas, cx: Float, cy: Float, r: Float) {
@@ -977,11 +1084,18 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         const val EASE_PER_SEC = 8f
         const val BACKDROP_FADE_SEC = 0.7f
         const val PRESS_SEC = 0.22f
-        const val PROGRESS_TICK_MS = 500L
         const val LOCK_RETRY_MS = 250L
+        const val MAX_LOCK_FAILURES = 4
         /** Sync controls close themselves after this long without a tap. */
         const val SYNC_IDLE_MS = 12_000L
-        const val DRIFT_FRAME_MS = 50L
+        /** Background drift advances at this interval (8fps is plenty for motion this slow). */
+        const val DRIFT_FULL_FRAME_MS = 125L
+        /** The progress wave needs a steadier rate than the background drift to look smooth. */
+        const val WAVE_FRAME_MS = 33L
+        const val WAVE_AMPLITUDE_DP = 4f
+        const val WAVE_LENGTH_DP = 40f
+        /** Wave crests travel at this many wavelengths per second while playing. */
+        const val WAVE_SPEED = 0.32f
         const val DRIFT_DOWNSCALE = 4
 
         private class DriftLayer(
