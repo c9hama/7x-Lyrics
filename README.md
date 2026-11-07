@@ -22,9 +22,9 @@ with karaoke-style highlighting and Arabic and Kurdish (right-to-left) support.
 The line being sung is big and bright, the lines around it fade into the colours of the album
 cover, and the whole thing scrolls in time with the song. Touch a line to jump there.
 
-![7x Lyrics on an 800×480 head unit](docs/screenshots/lyrics-view.png)
+![7x Lyrics on an 800×480 head unit](docs/screenshots/demo.gif)
 
-> Screenshots use made-up demo songs and generated cover art (the app's debug-only demo mode),
+> Screenshots and the animation use made-up demo songs and generated cover art (the app's debug-only demo mode),
 > so no real lyrics or artwork live in this repository.
 
 ---
