@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.RadioGroup
 import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -58,6 +59,18 @@ class MainActivity : ComponentActivity() {
         findViewById<Switch>(R.id.karaoke_switch).apply {
             isChecked = AppSettings.karaoke.value
             setOnCheckedChangeListener { _, checked -> AppSettings.setKaraoke(this@MainActivity, checked) }
+        }
+        // Car-screen look, shared with the renderer's preferences (it applies changes live).
+        val viewPrefs = getSharedPreferences("lyrics_view", MODE_PRIVATE)
+        val sizes = mapOf(R.id.size_small to 0.85f, R.id.size_medium to 1f, R.id.size_large to 1.2f)
+        findViewById<RadioGroup>(R.id.lyrics_size).apply {
+            val current = viewPrefs.getFloat("text_scale", 1f)
+            check(sizes.minByOrNull { kotlin.math.abs(it.value - current) }!!.key)
+            setOnCheckedChangeListener { _, id -> sizes[id]?.let { viewPrefs.edit().putFloat("text_scale", it).apply() } }
+        }
+        findViewById<Switch>(R.id.moving_background_switch).apply {
+            isChecked = viewPrefs.getBoolean("moving_background", true)
+            setOnCheckedChangeListener { _, on -> viewPrefs.edit().putBoolean("moving_background", on).apply() }
         }
         warningRow = findViewById(R.id.warning_row)
         syncSection = findViewById(R.id.sync_section)

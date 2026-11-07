@@ -53,4 +53,9 @@
     <string name="keepalive_text">Keeps lyrics updating while your phone is locked</string>
     <string name="aa_install_button">Install for Android Auto</string>
     <string name="aa_install_summary">Reinstalls this app through Android\'s installer so the car shows Lyrics View. Use after installing a new version.</string>
+    <string name="lyrics_size_title">Lyrics size</string>
+    <string name="size_small">Small</string>
+    <string name="size_medium">Medium</string>
+    <string name="size_large">Large</string>
+    <string name="moving_background_title">Moving background</string>
 </resources>

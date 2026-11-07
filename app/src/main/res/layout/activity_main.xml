@@ -178,6 +178,49 @@
             android:text="@string/karaoke_summary"
             android:textSize="13sp" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/lyrics_size_title"
+            android:textSize="16sp" />
+
+        <RadioGroup
+            android:id="@+id/lyrics_size"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/size_small"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/size_small" />
+
+            <RadioButton
+                android:id="@+id/size_medium"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/size_medium" />
+
+            <RadioButton
+                android:id="@+id/size_large"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/size_large" />
+        </RadioGroup>
+
+        <Switch
+            android:id="@+id/moving_background_switch"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="@string/moving_background_title"
+            android:textSize="16sp" />
+
         <Button
             android:id="@+id/aa_install"
             android:layout_width="wrap_content"

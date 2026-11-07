@@ -23,6 +23,7 @@ import android.os.SystemClock
 import android.text.Layout
 import android.util.Log
 import android.text.StaticLayout
+import android.text.TextDirectionHeuristics
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.Surface
@@ -58,7 +59,7 @@ import kotlin.math.sin
  *        ⏮   ( ▶ )   ⏭
  */
 class LyricsRenderer(context: Context) : SurfaceCallback {
-    enum class Control { PREVIOUS, PLAY_PAUSE, NEXT, EARLIER, LATER, RESET, DONE, ADJUST, DISMISS }
+    enum class Control { PREVIOUS, PLAY_PAUSE, NEXT, LIKE, DISLIKE, SHUFFLE, REPEAT, EARLIER, LATER, RESET, DONE, ADJUST, DISMISS }
 
     /** Called when one of the footer buttons is tapped. */
     var onControl: ((Control) -> Unit)? = null
@@ -83,10 +84,39 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     /** Start time of each lyric line, to estimate the karaoke sweep. */
     private var lineStarts: LongArray? = null
     private var karaoke = false
+    /** Most lines of the current song are right-to-left (Arabic, Kurdish, Persian, Hebrew...). */
+    private var rtlSong = false
+    /** Thumbs-up state from the player (null: not offered), with a brief optimistic override. */
+    private var liked: Boolean? = null
+    private var likeOverride: Boolean? = null
+    private var disliked: Boolean? = null
+    // Browsing the lyrics by touch: how far the view is moved from the sung line, plus fling.
+    private var manualOffset = 0f
+    private var flingVelocity = 0f
+    private var browseUntil = 0L
+    private var browseAmount = 0f
+    private val endBrowse = Runnable { requestFrame() }
+    /** On-screen rectangle of each visible lyric row, for tap-to-seek. */
+    private val lineHits = ArrayList<Pair<RectF, Int>>()
+    private var lyricsBounds: RectF? = null
+    private var shuffleOn: Boolean? = null
+    private var repeatMode: Int? = null
+    /** System "Remove animations" is on: keep the background and progress wave still. */
+    private val reduceMotion = runCatching {
+        android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }.getOrDefault(false)
 
     private val res = context.resources
     private val prefs = context.getSharedPreferences("lyrics_view", Context.MODE_PRIVATE)
     private var textScale = prefs.getFloat(KEY_TEXT_SCALE, 1f)
+    /** Size and background are also set from the phone app (the legacy car screen has no buttons). */
+    private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { p, key ->
+        when (key) {
+            KEY_TEXT_SCALE -> { textScale = p.getFloat(KEY_TEXT_SCALE, 1f); layoutWidth = -1 }
+            KEY_MOVING_BACKGROUND -> { movingBackground = p.getBoolean(KEY_MOVING_BACKGROUND, true); stillDirty = true; lastDriftNanos = 0L }
+        }
+        requestFrame()
+    }.also { prefs.registerOnSharedPreferenceChangeListener(it) }
 
     // Frames are paced with a plain main-thread Handler, not Choreographer: Choreographer follows
     // the phone's display vsync, which the phone may throttle or stop for an app with no visible
@@ -147,6 +177,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var layouts: List<StaticLayout> = emptyList()
     private var layoutWidth = -1
     private var layoutTextSize = -1f
+    private var layoutCentered = true
     private var emphasis = FloatArray(0)
     private var scroll = Float.NaN
 
@@ -161,6 +192,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     private var progressBounds: RectF? = null
     private var progressLeft = 0f
     private var progressWidth = 1f
+    private var progressFlipped = false
     /** Position (ms) and time of a tap-to-seek, used until the player reports the new position. */
     private var seekOverride: Pair<Long, Long>? = null
     private var pressed: Control? = null
@@ -235,19 +267,65 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         requestFrame()
     }
 
+    /** True when ([x], [y]) is over the lyrics, so a drag there scrolls them. */
+    fun isOverLyrics(x: Float, y: Float) = lyricsBounds?.contains(x, y) == true
+
+    override fun onScroll(distanceX: Float, distanceY: Float) {
+        if (rows.isEmpty()) return
+        manualOffset += distanceY
+        flingVelocity = 0f
+        holdBrowse()
+    }
+
+    override fun onFling(velocityX: Float, velocityY: Float) {
+        if (rows.isEmpty()) return
+        flingVelocity = -velocityY
+        holdBrowse()
+    }
+
+    private fun holdBrowse() {
+        browseUntil = SystemClock.uptimeMillis() + BROWSE_HOLD_MS
+        main.removeCallbacks(endBrowse)
+        main.postDelayed(endBrowse, BROWSE_HOLD_MS + 20)
+        requestFrame()
+    }
+
+    /** Jumps the song to the start of lyric [row] (row 0 is the intro). */
+    private fun seekToRow(row: Int) {
+        val starts = lineStarts ?: return
+        val lineStart = if (row <= 0) 0L else starts.getOrNull(row - 1) ?: return
+        // Land just before the line so it's heard from its start (lines show LEAD_MS early).
+        val target = (lineStart - offsetMs - LyricsEngine.LEAD_MS + 30).coerceIn(0L, max(durationMs, 0L))
+        seekOverride = target to SystemClock.elapsedRealtime()
+        onSeek?.invoke(target)
+        manualOffset = 0f
+        flingVelocity = 0f
+        browseUntil = 0L
+        requestFrame()
+    }
+
     override fun onClick(x: Float, y: Float) {
         progressBounds?.takeIf { it.contains(x, y) && durationMs > 0 }?.let { bar ->
-            val target = (((x - progressLeft) / progressWidth).coerceIn(0f, 1f) * durationMs).toLong()
+            val t = ((x - progressLeft) / progressWidth).coerceIn(0f, 1f)
+            val target = ((if (progressFlipped) 1f - t else t) * durationMs).toLong()
             // Show the new position right away; the player's own update follows shortly.
             seekOverride = target to SystemClock.elapsedRealtime()
             onSeek?.invoke(target)
             requestFrame()
             return
         }
-        val hit = controlBounds.entries.firstOrNull { it.value.contains(x, y) }?.key ?: return
+        val hit = controlBounds.entries.firstOrNull { it.value.contains(x, y) }?.key
+        if (hit == null) {
+            lineHits.firstOrNull { it.first.contains(x, y) }?.let { seekToRow(it.second) }
+            return
+        }
         pressed = hit
         pressAmount = 1f
         when (hit) {
+            Control.LIKE -> {
+                likeOverride = !(likeOverride ?: liked ?: false)
+                onControl?.invoke(hit)
+            }
             Control.ADJUST -> setSyncMode(true)
             Control.DONE -> setSyncMode(false)
             else -> {
@@ -271,7 +349,9 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     // ---- Public API ------------------------------------------------------------------------
 
     fun release() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         main.removeCallbacks(exitSyncMode)
+        main.removeCallbacks(endBrowse)
         worker.shutdownNow()
         frameHandler.removeCallbacks(frameRunnable)
         frameHandler.removeCallbacks(watchdog)
@@ -310,8 +390,15 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     fun update(source: NowPlayingTracker.Source, display: LyricsEngine.Display) {
         title = display.track?.title.orEmpty()
         artist = display.track?.artist.orEmpty()
-        if (source.playback !== playback) seekOverride = null
+        if (source.playback !== playback) {
+            seekOverride = null
+            likeOverride = null // the player has answered (or moved on)
+        }
         playback = source.playback
+        liked = NowPlayingTracker.isLiked(source.playback)
+        disliked = NowPlayingTracker.isDisliked(source.playback)
+        shuffleOn = NowPlayingTracker.isShuffleOn(source.playback)
+        repeatMode = NowPlayingTracker.repeatMode(source.playback)
         durationMs = source.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 }
             ?: display.track?.durationMs ?: 0L
 
@@ -320,6 +407,10 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             if (synced == null) emptyList() else listOf(MUSIC_NOTE) + synced.map { it.text.ifBlank { MUSIC_NOTE } }
         if (newRows != rows) {
             rows = newRows
+            rtlSong = isMostlyRtl(newRows)
+            manualOffset = 0f
+            flingVelocity = 0f
+            browseUntil = 0L
             layoutWidth = -1
             scroll = Float.NaN
             emphasis = FloatArray(newRows.size)
@@ -534,7 +625,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         // Most frames while playing only move the progress wave: repaint just that strip and let
         // the surface keep the rest. Full frames happen on real changes and for the drift (10fps).
         val playing = playback?.state == PlaybackState.STATE_PLAYING
-        val driftDue = movingBackground && playing && backdrop != null &&
+        val driftDue = movingBackground && !reduceMotion && playing && backdrop != null &&
             frameNanos - lastDriftFrameNanos >= DRIFT_FULL_FRAME_MS * 1_000_000
         val partialRegion = when {
             waveRect != null && sweepRect != null -> Rect(waveRect).apply { union(sweepRect!!) }
@@ -566,14 +657,33 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             if (tonesFading) toneFade = min(1f, toneFade + dt / TONE_FADE_SEC)
             animating = drawBackdrop(canvas, dt, frameNanos, recompose = driftDue) || tonesFading
             controlBounds.clear() // re-registered by whatever is drawn this frame
-            val headerBottom = drawWarning(canvas, area, u, drawHeader(canvas, area, u))
-            val footer = if (syncMode) drawSyncFooter(canvas, area, u, dt) else drawFooter(canvas, area, u, dt)
-            animating = footer.animating || animating
-            animating = if (message != null || rows.isEmpty()) {
-                drawMessage(canvas, area, headerBottom, footer.top, u)
-                animating
+            progressBounds = null
+            waveRect = null
+            if (isWide(area, u)) {
+                // Lyrics get the left 70% at full height; song, art and controls the right 30%.
+                val panel = Rect(area.right - (area.width() * PANEL_FRACTION).toInt(), area.top, area.right, area.bottom)
+                val lyricsArea = Rect(area.left, area.top, panel.left, area.bottom)
+                drawPanel(canvas, panel, u)
+                val top = drawWarning(canvas, lyricsArea, u, lyricsArea.top + 14 * u)
+                val footer = if (syncMode) drawSyncFooter(canvas, lyricsArea, u, dt) else drawFooter(canvas, lyricsArea, u, dt, compact = true)
+                animating = footer.animating || animating
+                val bottom = footer.top
+                animating = if (message != null || rows.isEmpty()) {
+                    drawMessage(canvas, lyricsArea, top, bottom, u)
+                    animating
+                } else {
+                    drawLyrics(canvas, lyricsArea, top, bottom, u, dt, centered = false) || animating
+                }
             } else {
-                drawLyrics(canvas, area, headerBottom, footer.top, u, dt) || animating
+                val headerBottom = drawWarning(canvas, area, u, drawHeader(canvas, area, u))
+                val footer = if (syncMode) drawSyncFooter(canvas, area, u, dt) else drawFooter(canvas, area, u, dt)
+                animating = footer.animating || animating
+                animating = if (message != null || rows.isEmpty()) {
+                    drawMessage(canvas, area, headerBottom, footer.top, u)
+                    animating
+                } else {
+                    drawLyrics(canvas, area, headerBottom, footer.top, u, dt, centered = true) || animating
+                }
             }
         } catch (e: Exception) {
             // A drawing bug must not crash the app: Android Auto hides a car app that keeps
@@ -832,8 +942,6 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
 
     /** Earlier / [offset · tap to reset] / Later / Done, in place of the playback footer. */
     private fun drawSyncFooter(canvas: Canvas, area: Rect, u: Float, dt: Float): Footer {
-        progressBounds = null
-        waveRect = null
         if (pressAmount > 0f) pressAmount = max(0f, pressAmount - dt / PRESS_SEC)
 
         val earlier = res.getString(R.string.sync_earlier)
@@ -905,25 +1013,75 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         return rect.bottom + 4 * u
     }
 
-    /** Progress bar and centred transport controls. */
-    private fun drawFooter(canvas: Canvas, area: Rect, u: Float, dt: Float): Footer {
-        val playSize = 56 * u
-        val sideSize = 46 * u
-        val spacing = 34 * u
+    /** Stacked layout (split screen): progress bar and centred transport controls. */
+    private fun drawFooter(canvas: Canvas, area: Rect, u: Float, dt: Float, compact: Boolean = false): Footer {
+        // Compact: the wide layout's row under the lyrics, a little smaller and closer to the edge.
+        val playSize = (if (compact) 46 else 56) * u
+        val side = (if (compact) 40 else 46) * u
+        val spacing = (if (compact) 26 else 34) * u
         val cx = area.exactCenterX()
-        val cy = area.bottom - 16 * u - playSize / 2
-
+        val cy = area.bottom - (if (compact) 10 else 16) * u - playSize / 2
         if (pressAmount > 0f) pressAmount = max(0f, pressAmount - dt / PRESS_SEC)
         val waving = advanceWave(dt)
-        fun pressScale(c: Control) = if (pressed == c) 1f - 0.14f * pressAmount else 1f
+        drawTransport(canvas, cx, cy, u, playSize, sideSize = side, spacing = spacing)
+        drawExtras(canvas, area, cx, cy, u, transportHalf = playSize * PILL_ASPECT / 2 + spacing + side)
 
+        var footerTop = cy - playSize / 2 - 10 * u
+        if (durationMs > 0) {
+            timePaint.textSize = TIME_DP * u
+            val timeBaseline = cy - playSize / 2 - (if (compact) 6 else 10) * u
+            val barY = timeBaseline + timePaint.ascent() - (if (compact) 10 else 12) * u
+            val barWidth = if (compact) min(area.width() * 0.78f, 460 * u) else min(area.width() * 0.7f, 620 * u)
+            drawProgress(canvas, cx - barWidth / 2, cx + barWidth / 2, barY, timeBaseline, u)
+            footerTop = barY - 20 * u
+        }
+        return Footer(footerTop, pressAmount > 0f || waving)
+    }
+
+    /** Wide layout: the right column with the album art and, under it, title and artist. */
+    private fun drawPanel(canvas: Canvas, panel: Rect, u: Float) {
+        val pad = 18 * u
+        val innerW = panel.width() - 2 * pad
+        titlePaint.textSize = 19 * u
+        artistPaint.textSize = 16 * u
+        val titleH = titlePaint.descent() - titlePaint.ascent()
+        val artistH = if (artist.isEmpty()) 0f else artistPaint.descent() - artistPaint.ascent()
+        val textGap = 14 * u
+        var art = min(innerW, panel.height() - 2 * pad - titleH - artistH - textGap)
+        if (thumbShader == null || art < 72 * u) art = 0f
+        val colW = if (art > 0f) art else innerW
+        val colL = panel.exactCenterX() - colW / 2
+        var y = panel.top + (panel.height() - (titleH + artistH + if (art > 0f) art + textGap else 0f)) / 2
+
+        if (art > 0f) {
+            val shader = thumbShader!!
+            val bmp = thumb!!
+            val dst = RectF(colL, y, colL + art, y + art)
+            shaderMatrix.setRectToRect(RectF(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat()), dst, Matrix.ScaleToFit.FILL)
+            shader.setLocalMatrix(shaderMatrix)
+            fillPaint.shader = shader
+            fillPaint.alpha = 255
+            canvas.drawRoundRect(dst, 12 * u, 12 * u, fillPaint)
+            fillPaint.shader = null
+            y += art + textGap
+        }
+        titlePaint.alpha = 255
+        canvas.drawText(TextUtils.ellipsize(title, titlePaint, colW, TextUtils.TruncateAt.END).toString(), colL, y - titlePaint.ascent(), titlePaint)
+        if (artistH > 0f) {
+            artistPaint.alpha = 200
+            canvas.drawText(TextUtils.ellipsize(artist, artistPaint, colW, TextUtils.TruncateAt.END).toString(), colL, y + titleH - artistPaint.ascent(), artistPaint)
+        }
+    }
+
+    /** Previous / play-pause pill / next, centred at ([cx], [cy]); registers their tap areas. */
+    private fun drawTransport(canvas: Canvas, cx: Float, cy: Float, u: Float, playSize: Float, sideSize: Float, spacing: Float) {
+        fun pressScale(c: Control) = if (pressed == c) 1f - 0.14f * pressAmount else 1f
         val isPlaying = playback?.state == PlaybackState.STATE_PLAYING
         // Like YouTube Music's car player: a wide pill in the cover's light tone for play/pause,
         // flanked by outlined skip icons.
         val pillW = playSize * PILL_ASPECT
         val prevX = cx - pillW / 2 - spacing - sideSize / 2
         val nextX = cx + pillW / 2 + spacing + sideSize / 2
-
         val ps = pressScale(Control.PLAY_PAUSE)
         val w = pillW * ps
         val h = playSize * ps
@@ -931,83 +1089,128 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         fillPaint.color = toneLight
         canvas.drawRoundRect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, h / 2, h / 2, fillPaint)
         drawSymbol(canvas, if (isPlaying) Symbols.pause else Symbols.play, cx, cy, h * 0.56f, toneOnLight)
-
         drawSymbol(canvas, Symbols.skipPrevious, prevX, cy, sideSize * 0.8f * pressScale(Control.PREVIOUS), Color.WHITE, 235)
         drawSymbol(canvas, Symbols.skipNext, nextX, cy, sideSize * 0.8f * pressScale(Control.NEXT), Color.WHITE, 235)
 
-        val touch = 8 * u
-        controlBounds[Control.PREVIOUS] = RectF(prevX - sideSize / 2 - touch, cy - sideSize / 2 - touch, prevX + sideSize / 2 + touch, cy + sideSize / 2 + touch)
-        controlBounds[Control.PLAY_PAUSE] = RectF(cx - pillW / 2 - touch, cy - playSize / 2 - touch, cx + pillW / 2 + touch, cy + playSize / 2 + touch)
-        controlBounds[Control.NEXT] = RectF(nextX - sideSize / 2 - touch, cy - sideSize / 2 - touch, nextX + sideSize / 2 + touch, cy + sideSize / 2 + touch)
+        // Tap areas at least 48dp (Android Auto's minimum), whatever the drawn size.
+        val half = max(sideSize / 2 + 4 * u, 24 * u)
+        controlBounds[Control.PREVIOUS] = RectF(prevX - half, cy - half, prevX + half, cy + half)
+        controlBounds[Control.PLAY_PAUSE] = RectF(cx - pillW / 2 - 6 * u, cy - max(playSize / 2, 24 * u) - 4 * u, cx + pillW / 2 + 6 * u, cy + max(playSize / 2, 24 * u) + 4 * u)
+        controlBounds[Control.NEXT] = RectF(nextX - half, cy - half, nextX + half, cy + half)
+    }
 
-        // Progress, YouTube Music style: the played part is a travelling wave that settles flat
-        // when paused, the rest is a dim straight line, with a small vertical thumb between.
-        //   ∿∿∿∿∿∿∿∿∿|──────────────
-        //   1:15                 3:34
-        var footerTop = cy - playSize / 2 - 10 * u
-        progressBounds = null
-        waveRect = null
-        if (durationMs > 0) {
-            timePaint.textSize = 12.5f * u
-            val timeBaseline = cy - playSize / 2 - 10 * u
-            val barY = timeBaseline + timePaint.ascent() - 12 * u
-            val barWidth = min(area.width() * 0.7f, 620 * u)
-            val left = cx - barWidth / 2
-            val right = cx + barWidth / 2
-            val fraction = (positionNow().toFloat() / durationMs).coerceIn(0f, 1f)
-            val playedX = left + barWidth * fraction
-            val stroke = 3.2f * u
-            val gap = 7 * u
-
-            // Unplayed: dim straight line after a small gap.
-            strokePaint.strokeWidth = stroke
-            strokePaint.color = Color.WHITE
-            strokePaint.alpha = 77
-            if (right > playedX + gap) canvas.drawLine(playedX + gap, barY, right, barY, strokePaint)
-
-            // Played: sine wave whose height eases with play/pause.
-            val amplitude = WAVE_AMPLITUDE_DP * u * waveAmount
-            val wavelength = WAVE_LENGTH_DP * u
-            val end = playedX - gap
-            if (end > left) {
-                strokePaint.color = toneLight
-                if (amplitude < 0.3f) {
-                    canvas.drawLine(left, barY, end, barY, strokePaint)
-                } else {
-                    wavePath.reset()
-                    val step = 2 * u
-                    var x = left
-                    wavePath.moveTo(x, barY + amplitude * sin(2f * PI.toFloat() * (x - left) / wavelength - wavePhase))
-                    while (x < end) {
-                        x = min(x + step, end)
-                        wavePath.lineTo(x, barY + amplitude * sin(2f * PI.toFloat() * (x - left) / wavelength - wavePhase))
-                    }
-                    canvas.drawPath(wavePath, strokePaint)
-                }
-            }
-
-            // Thumb: short vertical pill.
-            fillPaint.color = toneLight
-            val thumbW = 4.5f * u
-            val thumbH = 18 * u
-            canvas.drawRoundRect(playedX - thumbW / 2, barY - thumbH / 2, playedX + thumbW / 2, barY + thumbH / 2, thumbW / 2, thumbW / 2, fillPaint)
-
-            // Generous touch target: the whole row, not just the thin line.
-            progressLeft = left
-            progressWidth = barWidth
-            progressBounds = RectF(left - 12 * u, barY - 20 * u, right + 12 * u, barY + 16 * u)
-
-            timePaint.alpha = 200
-            canvas.drawText(formatTime(positionNow()), left, timeBaseline, timePaint)
-            val total = formatTime(durationMs)
-            canvas.drawText(total, right - timePaint.measureText(total), timeBaseline, timePaint)
-            footerTop = barY - 20 * u
-            waveRect = Rect(
-                (left - 16 * u).toInt(), (barY - 14 * u).toInt(),
-                (right + 16 * u).toInt(), (timeBaseline + timePaint.descent() + 4 * u).toInt(),
-            )
+    /**
+     * Secondary buttons flanking the transport, YouTube Music style:
+     *   dislike  shuffle  |  ⏮  ( ▶ )  ⏭  |  repeat  like
+     * Only the ones the player offers are shown; on narrow screens the outer pair goes first.
+     */
+    private fun drawExtras(canvas: Canvas, area: Rect, cx: Float, cy: Float, u: Float, transportHalf: Float) {
+        val slot = 44 * u
+        val gap = 10 * u
+        val room = min(cx - area.left, area.right - cx) - transportHalf - 8 * u
+        val inner = listOfNotNull(Control.SHUFFLE.takeIf { shuffleOn != null }, Control.REPEAT.takeIf { repeatMode != null })
+        val outer = listOfNotNull(Control.DISLIKE.takeIf { disliked != null }, Control.LIKE.takeIf { liked != null })
+        val pairs = buildList {
+            if (inner.isNotEmpty()) add(Control.SHUFFLE to Control.REPEAT)
+            if (outer.isNotEmpty()) add(Control.DISLIKE to Control.LIKE)
         }
-        return Footer(footerTop, pressAmount > 0f || waving)
+        var offset = transportHalf
+        for ((left, right) in pairs) {
+            if (offset - transportHalf + gap + slot > room) break
+            offset += gap + slot / 2
+            drawExtra(canvas, left, cx - offset, cy, u)
+            drawExtra(canvas, right, cx + offset, cy, u)
+            offset += slot / 2
+        }
+    }
+
+    private fun drawExtra(canvas: Canvas, control: Control, x: Float, cy: Float, u: Float) {
+        if (control == Control.LIKE) return drawLike(canvas, x, cy, u)
+        val (path, active) = when (control) {
+            Control.DISLIKE -> (if (disliked == true) Symbols.thumbDownFilled else Symbols.thumbDown) to (disliked ?: return)
+            Control.SHUFFLE -> Symbols.shuffle to (shuffleOn ?: return)
+            Control.REPEAT -> (if (repeatMode == 2) Symbols.repeatOne else Symbols.repeat) to ((repeatMode ?: return) != 0)
+            else -> return
+        }
+        val scale = if (pressed == control) 1f - 0.16f * pressAmount else 1f
+        drawSymbol(canvas, path, x, cy, 26 * u * scale, if (active) toneLight else Color.WHITE, if (active) 255 else 200)
+        // On/off isn't shown by colour alone: an active shuffle/repeat also gets a dot underneath.
+        if (active && control != Control.DISLIKE) {
+            fillPaint.color = toneLight
+            canvas.drawCircle(x, cy + 18 * u, 2.5f * u, fillPaint)
+        }
+        controlBounds[control] = RectF(x - 24 * u, cy - 24 * u, x + 24 * u, cy + 24 * u)
+    }
+
+    /** Thumbs-up, filled when liked; only drawn when the player offers liking. */
+    private fun drawLike(canvas: Canvas, cx: Float, cy: Float, u: Float) {
+        val state = likeOverride ?: liked ?: return
+        val scale = if (pressed == Control.LIKE) 1f - 0.16f * pressAmount else 1f
+        drawSymbol(canvas, if (state) Symbols.thumbUpFilled else Symbols.thumbUp, cx, cy, 28 * u * scale,
+            if (state) toneLight else Color.WHITE, if (state) 255 else 230)
+        controlBounds[Control.LIKE] = RectF(cx - 24 * u, cy - 24 * u, cx + 24 * u, cy + 24 * u)
+    }
+
+    /**
+     * Wavy progress bar between [left] and [right] with times underneath; sets the seek area and
+     * the strip repainted on wave-only frames.
+     */
+    private fun drawProgress(canvas: Canvas, left: Float, right: Float, barY: Float, timeBaseline: Float, u: Float) {
+        val barWidth = right - left
+        val fraction = (positionNow().toFloat() / durationMs).coerceIn(0f, 1f)
+        // Always left-to-right, whatever the lyrics' script: it follows the player and the interface.
+        val dir = 1f
+        val start = left
+        val end = right
+        val playedX = start + dir * barWidth * fraction
+        val stroke = 3.2f * u
+        val gap = 7 * u
+
+        strokePaint.strokeWidth = stroke
+        strokePaint.color = Color.WHITE
+        strokePaint.alpha = 110 // ~3:1 on the dark scrim, like any control boundary
+        if ((end - playedX) * dir > gap) canvas.drawLine(playedX + dir * gap, barY, end, barY, strokePaint)
+
+        val amplitude = WAVE_AMPLITUDE_DP * u * waveAmount
+        val wavelength = WAVE_LENGTH_DP * u
+        val playedEnd = playedX - dir * gap
+        if ((playedEnd - start) * dir > 0f) {
+            strokePaint.color = toneLight
+            if (amplitude < 0.3f) {
+                canvas.drawLine(start, barY, playedEnd, barY, strokePaint)
+            } else {
+                wavePath.reset()
+                val step = 2 * u
+                var d = 0f
+                val len = abs(playedEnd - start)
+                wavePath.moveTo(start, barY + amplitude * sin(-wavePhase))
+                while (d < len) {
+                    d = min(d + step, len)
+                    wavePath.lineTo(start + dir * d, barY + amplitude * sin(2f * PI.toFloat() * d / wavelength - wavePhase))
+                }
+                canvas.drawPath(wavePath, strokePaint)
+            }
+        }
+        fillPaint.shader = null
+        fillPaint.color = toneLight
+        val thumbW = 4.5f * u
+        val thumbH = 18 * u
+        canvas.drawRoundRect(playedX - thumbW / 2, barY - thumbH / 2, playedX + thumbW / 2, barY + thumbH / 2, thumbW / 2, thumbW / 2, fillPaint)
+
+        progressLeft = left
+        progressWidth = barWidth
+        progressFlipped = false
+        progressBounds = RectF(left - 12 * u, barY - 22 * u, right + 12 * u, barY + 18 * u)
+
+        timePaint.alpha = 210
+        val elapsed = formatTime(positionNow())
+        val total = formatTime(durationMs)
+        val startText = elapsed
+        val endText = total
+        canvas.drawText(startText, left, timeBaseline, timePaint)
+        canvas.drawText(endText, right - timePaint.measureText(endText), timeBaseline, timePaint)
+        val strip = Rect((left - 16 * u).toInt(), (barY - 14 * u).toInt(), (right + 16 * u).toInt(), (timeBaseline + timePaint.descent() + 4 * u).toInt())
+        waveRect = waveRect?.apply { union(strip) } ?: strip
     }
 
     /**
@@ -1018,7 +1221,7 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val playing = playback?.state == PlaybackState.STATE_PLAYING
         // dt is 0 on the first frame after idling; use the paced frame interval instead.
         val step = if (dt > 0f) dt else if (playing) WAVE_FRAME_MS / 1000f else 0f
-        if (playing) wavePhase = (wavePhase + step * WAVE_SPEED * 2f * PI.toFloat()) % (2f * PI.toFloat())
+        if (playing && !reduceMotion) wavePhase = (wavePhase + step * WAVE_SPEED * 2f * PI.toFloat()) % (2f * PI.toFloat())
         val target = if (playing) 1f else 0f
         waveAmount += (target - waveAmount) * (1f - exp(-step * 6f))
         if (abs(target - waveAmount) < 0.01f) waveAmount = target
@@ -1052,8 +1255,21 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val skipNext: Path = parse("M660-240v-480h80v480h-80Zm-440 0v-480l360 240-360 240Zm80-240Zm0 90 136-90-136-90v180Z")
         val skipPrevious: Path = parse("M220-240v-480h80v480h-80Zm520 0L380-480l360-240v480Zm-80-240Zm0 90v-180l-136 90 136 90Z")
 
+        val thumbUpFilled: Path = parse24("M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z")
+        val thumbDownFilled: Path = parse24("M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z")
+        val thumbDown: Path = parse24("M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm0 12l-4.34 4.34L12 14H3v-2l3-7h9v10zm4-12h4v12h-4z")
+        val shuffle: Path = parse24("M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z")
+        val repeat: Path = parse24("M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z")
+        val repeatOne: Path = parse24("M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z")
+        val thumbUp: Path = parse24("M9 21h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.58 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2zM9 9l4.34-4.34L12 10h9v2l-3 7H9V9zM1 9h4v12H1z")
+
         // Even-odd so the outlined triangles keep their hollow centres.
         private fun parse(data: String) = PathParser.createPathFromPathData(data).apply { fillType = Path.FillType.EVEN_ODD }
+
+        /** Material Icons use a 0..24 box; map it onto the 0,-960 box the other symbols use. */
+        private fun parse24(data: String) = PathParser.createPathFromPathData(data).apply {
+            transform(Matrix().apply { setScale(40f, 40f); postTranslate(0f, -960f) })
+        }
     }
 
     private fun positionNow(): Long {
@@ -1073,6 +1289,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
 
     private fun drawMessage(canvas: Canvas, area: Rect, top: Float, bottom: Float, u: Float) {
         sweepRect = null
+        lineHits.clear()
+        lyricsBounds = null
         val text = message ?: return
         linePaint.textSize = 22 * u
         linePaint.color = Color.WHITE // lyric lines leave it tinted
@@ -1089,10 +1307,11 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
     }
 
     /** Returns true while anything is still easing. */
-    private fun drawLyrics(canvas: Canvas, area: Rect, top: Float, bottom: Float, u: Float, dt: Float): Boolean {
+    private fun drawLyrics(canvas: Canvas, area: Rect, top: Float, bottom: Float, u: Float, dt: Float, centered: Boolean): Boolean {
         val lineSize = LINE_DP * u * textScale
-        val width = min(area.width() - 80 * u, 720 * u).toInt().coerceAtLeast(1)
-        ensureLayouts(width, lineSize)
+        val sidePad = if (centered) 40 * u else 32 * u
+        val width = (if (centered) min(area.width() - 2 * sidePad, 720 * u) else area.width() - 2 * sidePad).toInt().coerceAtLeast(1)
+        ensureLayouts(width, lineSize, centered)
 
         val snap = scroll.isNaN()
         val k = if (snap) 1f else 1f - exp(-dt * EASE_PER_SEC)
@@ -1118,13 +1337,39 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
 
         val active = currentRow.coerceIn(0, n - 1)
         val target = tops[active] + heights[active] / 2
-        scroll = if (snap) target else scroll + (target - scroll) * k
-        if (abs(target - scroll) < 0.5f) scroll = target else animating = true
+
+        // Touch browsing: follow the finger (and fling), then glide back to the sung line.
+        val now = SystemClock.uptimeMillis()
+        if (flingVelocity != 0f) {
+            manualOffset += flingVelocity * dt
+            flingVelocity *= exp(-dt * FLING_DECAY)
+            if (abs(flingVelocity) < 40f) flingVelocity = 0f
+            browseUntil = max(browseUntil, now + BROWSE_HOLD_MS)
+            animating = true
+        }
+        manualOffset = manualOffset.coerceIn(heights[0] / 2 - target, tops[n - 1] + heights[n - 1] / 2 - target)
+        val browsing = now < browseUntil
+        if (!browsing && manualOffset != 0f) {
+            manualOffset -= manualOffset * k
+            if (abs(manualOffset) < 0.5f) manualOffset = 0f
+            animating = true
+        }
+        val browseTarget = if (browsing) 1f else 0f
+        browseAmount += (browseTarget - browseAmount) * k
+        if (abs(browseTarget - browseAmount) < 0.01f) browseAmount = browseTarget else animating = true
+
+        val wanted = target + manualOffset
+        scroll = if (snap || browsing) wanted else scroll + (wanted - scroll) * k
+        if (abs(wanted - scroll) < 0.5f) scroll = wanted else animating = true
 
         val anchor = top + (bottom - top) * ANCHOR
         val fadeZone = (bottom - top) * EDGE_FADE
-        val left = area.exactCenterX() - width / 2f
+        val left = if (centered) area.exactCenterX() - width / 2f else area.left + sidePad
+        // Lines scale towards their start edge: the centre when centred, else the reading start.
+        val pivotX = if (centered) width / 2f else if (rtlSong) width.toFloat() else 0f
         sweepRect = null
+        lineHits.clear()
+        lyricsBounds = RectF(area.left.toFloat(), top, area.right.toFloat(), bottom)
         val currentLineColor = CoverTones.blend(Color.WHITE, toneLight, CURRENT_LINE_TINT)
 
         canvas.save()
@@ -1134,7 +1379,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             if (lineTop > bottom || lineTop + heights[i] < top) continue
 
             val distance = abs(i - active)
-            val base = (NEIGHBOUR_ALPHA - FALLOFF_ALPHA * (distance - 1)).coerceAtLeast(MIN_ALPHA)
+            val follow = (NEIGHBOUR_ALPHA - FALLOFF_ALPHA * (distance - 1)).coerceAtLeast(MIN_ALPHA)
+            val base = follow + (BROWSE_ALPHA - follow).coerceAtLeast(0f) * browseAmount
             val centre = lineTop + heights[i] / 2
             val edge = (min(centre - top, bottom - centre) / fadeZone).coerceIn(0f, 1f)
             // Neighbouring lines take the cover's pastel tone; the line being sung blends towards
@@ -1142,10 +1388,11 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             linePaint.color = CoverTones.blend(toneLight, currentLineColor, emphasis[i])
             val alpha = (base + (1f - base) * emphasis[i]) * edge
             val sweep = sweepProgress(i)
+            if (centre in top..bottom) lineHits += RectF(left, lineTop, left + width, lineTop + heights[i]) to i
 
             canvas.save()
             canvas.translate(left, lineTop)
-            canvas.scale(scales[i], scales[i], width / 2f, 0f)
+            canvas.scale(scales[i], scales[i], pivotX, 0f)
             if (sweep == null) {
                 linePaint.alpha = (alpha * 255).toInt()
                 layouts[i].draw(canvas)
@@ -1173,38 +1420,71 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         return SweepEstimate.progress(rows[row], start, starts.getOrNull(line + 1), position)
     }
 
-    /** Redraws [layout] clipped to its first [chars] characters, line by line for wrapped text. */
+    /**
+     * Redraws [layout] clipped to its first [chars] characters, line by line for wrapped text.
+     * Right-to-left text (Arabic, Kurdish...) fills from the right edge towards the left.
+     */
     private fun drawSweptPart(canvas: Canvas, layout: StaticLayout, chars: Float) {
         for (j in 0 until layout.lineCount) {
             val lineStart = layout.getLineStart(j)
             val lineEnd = layout.getLineEnd(j)
             if (chars <= lineStart) break
-            val right = if (chars >= lineEnd) {
-                layout.getLineRight(j)
+            val lineL = layout.getLineLeft(j)
+            val lineR = layout.getLineRight(j)
+            val clipL: Float
+            val clipR: Float
+            if (chars >= lineEnd) {
+                clipL = lineL
+                clipR = lineR
             } else {
                 val c = chars.toInt().coerceIn(lineStart, lineEnd - 1)
+                val rtl = layout.isRtlCharAt(c)
                 val x0 = layout.getPrimaryHorizontal(c)
-                val x1 = if (c + 1 < lineEnd) layout.getPrimaryHorizontal(c + 1) else layout.getLineRight(j)
-                x0 + (x1 - x0) * (chars - c)
+                val x1 = if (c + 1 < lineEnd) layout.getPrimaryHorizontal(c + 1) else if (rtl) lineL else lineR
+                val edge = x0 + (x1 - x0) * (chars - c)
+                if (rtl) { clipL = edge; clipR = lineR } else { clipL = lineL; clipR = edge }
             }
             canvas.save()
-            canvas.clipRect(layout.getLineLeft(j), layout.getLineTop(j).toFloat(), right, layout.getLineBottom(j).toFloat())
+            canvas.clipRect(clipL, layout.getLineTop(j).toFloat(), clipR, layout.getLineBottom(j).toFloat())
             layout.draw(canvas)
             canvas.restore()
         }
     }
 
-    private fun ensureLayouts(width: Int, textSize: Float) {
-        if (width == layoutWidth && textSize == layoutTextSize && layouts.size == rows.size) return
+    private fun ensureLayouts(width: Int, textSize: Float, centered: Boolean) {
+        if (width == layoutWidth && textSize == layoutTextSize && centered == layoutCentered && layouts.size == rows.size) return
         layoutWidth = width
         layoutTextSize = textSize
+        layoutCentered = centered
         linePaint.textSize = textSize
+        // One paragraph direction for the whole song, so every line shares an alignment edge
+        // (right-to-left.md: consistent alignment in a list); bidi inside a line still works.
+        val direction = if (rtlSong) TextDirectionHeuristics.RTL else TextDirectionHeuristics.LTR
         layouts = rows.map { text ->
             StaticLayout.Builder.obtain(text, 0, text.length, linePaint, width)
-                .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setAlignment(if (centered) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL)
+                .setTextDirection(direction)
                 .setLineSpacing(0f, 1.04f)
                 .build()
         }
+    }
+
+    private fun isWide(area: Rect, u: Float) = area.width() >= area.height() * 1.45f && area.width() >= 560 * u
+
+    /** True when most lyric lines start with a right-to-left letter. */
+    private fun isMostlyRtl(lines: List<String>): Boolean {
+        var rtl = 0
+        var ltr = 0
+        for (line in lines) {
+            for (ch in line) {
+                when (Character.getDirectionality(ch)) {
+                    Character.DIRECTIONALITY_RIGHT_TO_LEFT, Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC -> { rtl++; break }
+                    Character.DIRECTIONALITY_LEFT_TO_RIGHT -> { ltr++; break }
+                    else -> Unit
+                }
+            }
+        }
+        return rtl > ltr
     }
 
     private companion object {
@@ -1215,6 +1495,10 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         const val KEY_MOVING_BACKGROUND = "moving_background"
 
         const val LINE_DP = 34f
+        /** Share of a wide screen given to the now-playing column (lyrics get the rest). */
+        const val PANEL_FRACTION = 0.30f
+        /** Elapsed/total time labels; 14dp keeps them readable at arm's length. */
+        const val TIME_DP = 14f
         const val THUMB_PX = 192
         const val BACKDROP_PX = 160
         const val BLUR_RADIUS = 10
@@ -1267,5 +1551,10 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
             DriftLayer(scale = 1.5f, alpha = 0.5f, startDeg = 240f, degPerSec = 3.0f, orbit = 0.22f, orbitSec = 43f),
         )
         const val TAG = "LyricsRenderer"
+        /** How long the lyrics stay where the user scrolled them before following the song again. */
+        const val BROWSE_HOLD_MS = 4_000L
+        const val FLING_DECAY = 4f
+        /** Brightness of every line while browsing, so the whole song can be read. */
+        const val BROWSE_ALPHA = 0.72f
     }
 }

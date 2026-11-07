@@ -4,6 +4,8 @@ import android.graphics.Rect
 import android.media.session.PlaybackState
 import android.os.Bundle
 import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.ViewConfiguration
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.car.app.SurfaceContainer
@@ -19,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
+import kotlin.math.abs
 
 /**
  * The legacy-SDK car screen: a plain SurfaceView handed to the same [LyricsRenderer] the
@@ -60,10 +63,45 @@ class LegacyLyricsActivity : CarActivity() {
                 renderer.onSurfaceDestroyed(SurfaceContainer(holder.surface, 0, 0, 0))
             }
         })
+        // Taps go to buttons and lyric lines; a drag that starts on the lyrics scrolls them.
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        var downY = 0f
+        var lastY = 0f
+        var dragging = false
+        var canDrag = false
+        var velocity: VelocityTracker? = null
         view.setOnTouchListener { v, event ->
-            if (event.actionMasked == MotionEvent.ACTION_UP) {
-                renderer.onClick(event.x, event.y)
-                v.performClick()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = event.y
+                    lastY = event.y
+                    dragging = false
+                    canDrag = renderer.isOverLyrics(event.x, event.y)
+                    velocity?.recycle()
+                    velocity = VelocityTracker.obtain().apply { addMovement(event) }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    velocity?.addMovement(event)
+                    if (canDrag && !dragging && abs(event.y - downY) > slop) dragging = true
+                    if (dragging) renderer.onScroll(0f, lastY - event.y)
+                    lastY = event.y
+                }
+                MotionEvent.ACTION_UP -> {
+                    velocity?.addMovement(event)
+                    if (dragging) {
+                        velocity?.computeCurrentVelocity(1000)
+                        renderer.onFling(0f, velocity?.yVelocity ?: 0f)
+                    } else {
+                        renderer.onClick(event.x, event.y)
+                        v.performClick()
+                    }
+                    velocity?.recycle()
+                    velocity = null
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    velocity?.recycle()
+                    velocity = null
+                }
             }
             true
         }
@@ -104,6 +142,10 @@ class LegacyLyricsActivity : CarActivity() {
             LyricsRenderer.Control.PREVIOUS -> controls?.skipToPrevious()
             LyricsRenderer.Control.PLAY_PAUSE -> if (playing) controls?.pause() else controls?.play()
             LyricsRenderer.Control.NEXT -> controls?.skipToNext()
+            LyricsRenderer.Control.LIKE -> NowPlayingTracker.press(NowPlayingTracker.Toggle.LIKE)
+            LyricsRenderer.Control.DISLIKE -> NowPlayingTracker.press(NowPlayingTracker.Toggle.DISLIKE)
+            LyricsRenderer.Control.SHUFFLE -> NowPlayingTracker.press(NowPlayingTracker.Toggle.SHUFFLE)
+            LyricsRenderer.Control.REPEAT -> NowPlayingTracker.press(NowPlayingTracker.Toggle.REPEAT)
             LyricsRenderer.Control.EARLIER -> LyricsEngine.nudge(LyricsEngine.SYNC_STEP_MS)
             LyricsRenderer.Control.LATER -> LyricsEngine.nudge(-LyricsEngine.SYNC_STEP_MS)
             LyricsRenderer.Control.RESET -> LyricsEngine.resetOffset()

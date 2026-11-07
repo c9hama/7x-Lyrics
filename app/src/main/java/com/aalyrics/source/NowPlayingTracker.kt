@@ -17,6 +17,44 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Follows the media session of whichever player app is currently playing. */
 object NowPlayingTracker {
+    /** Player buttons YouTube Music exposes as custom actions; their names carry the state. */
+    enum class Toggle { LIKE, DISLIKE, SHUFFLE, REPEAT }
+
+    fun action(playback: PlaybackState?, toggle: Toggle): PlaybackState.CustomAction? =
+        playback?.customActions?.firstOrNull {
+            val n = it.name.toString().lowercase()
+            when (toggle) {
+                Toggle.LIKE -> "like" in n && "dislike" !in n
+                Toggle.DISLIKE -> "dislike" in n
+                Toggle.SHUFFLE -> "shuffle" in n
+                Toggle.REPEAT -> "repeat" in n
+            }
+        }
+
+    private fun actionName(playback: PlaybackState?, toggle: Toggle) = action(playback, toggle)?.name?.toString()?.lowercase()
+    private fun isUndo(name: String) = "undo" in name || "remove" in name || "unlike" in name
+
+    /** True when the current song is liked, false when not, null when liking isn't offered. */
+    fun isLiked(playback: PlaybackState?): Boolean? = actionName(playback, Toggle.LIKE)?.let(::isUndo)
+    fun isDisliked(playback: PlaybackState?): Boolean? = actionName(playback, Toggle.DISLIKE)?.let(::isUndo)
+    /** YouTube Music names the action after the current state: "Shuffle off" / "Shuffle on". */
+    fun isShuffleOn(playback: PlaybackState?): Boolean? = actionName(playback, Toggle.SHUFFLE)?.let { "off" !in it }
+    /** 0 off, 1 repeat all, 2 repeat one; null when not offered. */
+    fun repeatMode(playback: PlaybackState?): Int? = actionName(playback, Toggle.REPEAT)?.let {
+        when {
+            "off" in it -> 0
+            "one" in it || "1" in it -> 2
+            else -> 1
+        }
+    }
+
+    /** Taps the player's own button, so the change is saved in YouTube Music itself. */
+    fun press(toggle: Toggle) {
+        val controller = state.value.controller ?: return
+        val action = action(controller.playbackState, toggle) ?: return
+        controller.transportControls.sendCustomAction(action.action, action.extras)
+    }
+
     data class Source(
         val listening: Boolean = false,
         val controller: MediaController? = null,
