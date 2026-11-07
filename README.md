@@ -1,11 +1,14 @@
-# AA Lyrics
+<p align="center"><img src="docs/brand/7x-lyrics-icon.svg" width="96" alt="7x Lyrics icon"></p>
+
+<h1 align="center">7x Lyrics</h1>
+<p align="center"><b>by <a href="https://7xdevs.com">7X Devs</a></b></p>
 
 **Full-screen, time-synced lyrics for YouTube Music on your Android Auto car screen.**
 
 The line being sung is big and bright, the lines around it fade into the colours of the album
 cover, and the whole thing scrolls in time with the song. Touch a line to jump there.
 
-![Lyrics View on an 800×480 head unit](docs/screenshots/lyrics-view.png)
+![7x Lyrics on an 800×480 head unit](docs/screenshots/lyrics-view.png)
 
 > Screenshots use made-up demo songs and generated cover art (the app's debug-only demo mode),
 > so no real lyrics or artwork live in this repository.
@@ -66,17 +69,17 @@ The next 5 songs in your queue are fetched ahead, so lyrics keep working in tunn
 ## Install
 
 1. **Download** the latest APK from [Releases](../../releases) and install it on your phone.
-2. Open **AA Lyrics** and tap **Grant notification access** (used only to see what YouTube Music is playing).
+2. Open **7x Lyrics** and tap **Grant notification access** (used only to see what YouTube Music is playing).
 3. **Important:** scroll down and tap **Install for Android Auto**, then **Update**.
    Repeat this after every install or update, otherwise your car hides the app.
 4. Android Auto settings → tap **Version** about 10 times → ⋮ → **Developer settings** → turn on **Unknown sources**.
-5. Reconnect to the car and open **Lyrics View** from the app grid.
+5. Reconnect to the car and open **7x Lyrics** from the app grid.
 
 ## How it works
 
 - **Now playing:** reads YouTube Music's media session (title, artist, position, controls)
   through notification access.
-- **Car screen:** real cars hide sideloaded Car App Library apps, so Lyrics View runs as a legacy
+- **Car screen:** real cars hide sideloaded Car App Library apps, so the car screen runs as a legacy
   Android Auto projection app using the unreleased Android Auto SDK (the same approach as
   [Fermata Auto](https://github.com/AndreyPavlenko/Fermata)), drawing every frame itself on a surface.
 - **"Install for Android Auto"** reinstalls the app's own APK through Android's package installer
@@ -112,6 +115,8 @@ The DHU allows sideloaded apps that real cars hide, so always confirm in the car
 
 ---
 
-Personal project. Not affiliated with Google, YouTube or any lyrics provider. YouTube Music
+Made by **[7X Devs](https://7xdevs.com)** · support@7xdevs.com
+
+Not affiliated with Google, YouTube or any lyrics provider. YouTube Music
 lyrics come from an unofficial API and the Android Auto SDK is unreleased, so updates on their
 side can break either.

@@ -57,7 +57,7 @@ class LyricsTranslateLyrics {
 
     companion object {
         private const val BASE = "https://lyricstranslate.com"
-        private const val USER_AGENT = "AALyrics/0.4 (personal Android Auto lyrics app)"
+        private const val USER_AGENT = "7xLyrics/0.0.5 (personal Android Auto lyrics app; 7xdevs.com)"
 
         /** "Ardalan Bakr" -> "ardalan-bakr", keeping non-Latin letters as the site does. */
         fun slugify(name: String): String =

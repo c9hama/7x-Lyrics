@@ -13,7 +13,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.Material">
+        android:theme="@style/Theme.SevenXLyrics">
 
         <!-- Declares this app as an Android Auto media app. -->
         <meta-data

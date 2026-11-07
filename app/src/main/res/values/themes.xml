@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 7X brand: ink navy and amber (from 7xdevs.com). -->
+    <color name="brand_ink">#14213D</color>
+    <color name="brand_ink_soft">#2A3756</color>
+    <color name="brand_amber">#F5A524</color>
+    <color name="brand_amber_deep">#C7820C</color>
+    <color name="brand_page">#F4F6FA</color>
+
+    <style name="Theme.SevenXLyrics" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/brand_ink</item>
+        <item name="android:colorPrimaryDark">@color/brand_ink</item>
+        <item name="android:colorAccent">@color/brand_amber_deep</item>
+        <item name="android:windowBackground">@color/brand_page</item>
+        <item name="android:statusBarColor">@color/brand_ink</item>
+        <item name="android:textColorPrimary">@color/brand_ink</item>
+        <item name="android:buttonStyle">@style/Button.SevenX</item>
+    </style>
+
+    <style name="Button.SevenX" parent="@android:style/Widget.Material.Button.Colored">
+        <item name="android:backgroundTint">@color/brand_amber</item>
+        <item name="android:textColor">@color/brand_ink</item>
+    </style>
+</resources>

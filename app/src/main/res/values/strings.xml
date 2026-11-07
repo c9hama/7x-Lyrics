@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AA Lyrics</string>
-    <string name="lyrics_view_name">Lyrics View</string>
+    <string name="app_name">7x Lyrics</string>
+    <string name="lyrics_view_name">7x Lyrics</string>
     <string name="now_playing">Now playing</string>
-    <string name="need_access_short">Open AA Lyrics on your phone</string>
-    <string name="need_access_long">Grant notification access in AA Lyrics on your phone</string>
+    <string name="need_access_short">Open 7x Lyrics on your phone</string>
+    <string name="need_access_long">Grant notification access in 7x Lyrics on your phone</string>
     <string name="waiting_title">Waiting for music</string>
     <string name="waiting_subtitle">Start playing in YouTube Music</string>
     <string name="status_loading">looking for lyrics…</string>
@@ -14,9 +14,9 @@
     <string name="status_not_found">no lyrics found</string>
     <string name="status_synced">%d synced lines</string>
     <string name="source_format">Following %s</string>
-    <string name="access_explainer">AA Lyrics needs notification access to see what YouTube Music is playing. It doesn\'t read your notifications.</string>
+    <string name="access_explainer">7x Lyrics needs notification access to see what YouTube Music is playing. It doesn\'t read your notifications.</string>
     <string name="grant_access">Grant notification access</string>
-    <string name="aa_hint">In Android Auto, open Lyrics View from the app launcher. Its controls are forwarded to YouTube Music.</string>
+    <string name="aa_hint">In Android Auto, open 7x Lyrics from the app launcher. Its controls are forwarded to YouTube Music.</string>
     <string name="view_loading">Looking for lyrics…</string>
     <string name="view_failed">Couldn\'t load lyrics. Retrying…</string>
     <string name="view_unsynced">Only unsynced lyrics are available for this song</string>
@@ -49,10 +49,10 @@
     <string name="last_error_title">Last error (press and hold to copy, send it to me)</string>
     <string name="clear_error">Clear</string>
     <string name="keepalive_channel">Android Auto</string>
-    <string name="keepalive_title">Lyrics View is on the car screen</string>
+    <string name="keepalive_title">7x Lyrics is on the car screen</string>
     <string name="keepalive_text">Keeps lyrics updating while your phone is locked</string>
     <string name="aa_install_button">Install for Android Auto</string>
-    <string name="aa_install_summary">Reinstalls this app through Android\'s installer so the car shows Lyrics View. Use after installing a new version.</string>
+    <string name="aa_install_summary">Reinstalls this app through Android\'s installer so the car shows 7x Lyrics. Use after installing a new version.</string>
     <string name="lyrics_size_title">Lyrics size</string>
     <string name="size_small">Small</string>
     <string name="size_medium">Medium</string>
@@ -78,4 +78,6 @@
     <string name="sync_editor_link_hint">…or paste a lyricstranslate.com song link</string>
     <string name="sync_editor_link_load">Load</string>
     <string name="sync_editor_link_failed">Couldn\'t load lyrics from that link. Check it\'s a lyricstranslate.com song page.</string>
+    <string name="by_7x">by 7X Devs</string>
+    <string name="website_7x">7xdevs.com</string>
 </resources>

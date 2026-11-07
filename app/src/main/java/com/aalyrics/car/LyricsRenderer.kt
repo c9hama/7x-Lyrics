@@ -1299,10 +1299,17 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
         val layout = StaticLayout.Builder.obtain(text, 0, text.length, linePaint, width)
             .setAlignment(Layout.Alignment.ALIGN_CENTER)
             .build()
+        val textTop = top + (bottom - top - layout.height) / 2
         canvas.save()
-        canvas.translate(area.exactCenterX() - width / 2f, top + (bottom - top - layout.height) / 2)
+        canvas.translate(area.exactCenterX() - width / 2f, textTop)
         layout.draw(canvas)
         canvas.restore()
+        // Brand mark under the message: "7x Lyrics" in the 7X amber.
+        linePaint.textSize = 15 * u
+        linePaint.color = BRAND_AMBER
+        linePaint.alpha = 220
+        val mark = res.getString(R.string.app_name)
+        canvas.drawText(mark, area.exactCenterX() - linePaint.measureText(mark) / 2, textTop + layout.height + 30 * u, linePaint)
         layoutWidth = -1 // linePaint size was changed
     }
 
@@ -1489,6 +1496,8 @@ class LyricsRenderer(context: Context) : SurfaceCallback {
 
     private companion object {
         val DEFAULT_ACCENT = Color.rgb(0x3A, 0x2F, 0x5C)
+        /** 7X brand amber (7xdevs.com). */
+        val BRAND_AMBER = Color.rgb(0xF5, 0xA5, 0x24)
         val TEXT_SCALES = floatArrayOf(0.85f, 1f, 1.2f)
         const val KEY_TEXT_SCALE = "text_scale"
         const val MUSIC_NOTE = "♪"

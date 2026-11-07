@@ -80,6 +80,6 @@ class LrcLibClient(private val baseUrl: String = "https://lrclib.net") {
     }
 
     private companion object {
-        const val USER_AGENT = "AALyrics/0.1 (personal Android Auto lyrics app)"
+        const val USER_AGENT = "7xLyrics/0.0.5 (personal Android Auto lyrics app; 7xdevs.com)"
     }
 }
