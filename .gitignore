@@ -5,4 +5,4 @@ local.properties
 *.iml
 .DS_Store
 app/libs/aauto.aar
-brag-output/
+brag-output*/

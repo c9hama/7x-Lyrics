@@ -1,0 +1,22 @@
+name: App doesn't show in my car
+description: 7x Lyrics is missing from the Android Auto app grid, or closes in the car
+labels: [android-auto]
+body:
+  - type: checkboxes
+    id: steps
+    attributes:
+      label: Did you do these?
+      options:
+        - label: Tapped "Install for Android Auto" in the phone app after the last install or update
+        - label: Turned on Android Auto → Developer settings → Unknown sources
+        - label: Reconnected the phone to the car afterwards
+  - type: input
+    id: car
+    attributes: { label: Car or head unit, placeholder: "Toyota Corolla 2025, 1920x720" }
+  - type: input
+    id: versions
+    attributes: { label: Phone, Android version, Android Auto version, 7x Lyrics version }
+  - type: textarea
+    id: what
+    attributes: { label: What happens? }
+    validations: { required: true }

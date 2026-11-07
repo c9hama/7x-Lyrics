@@ -3,7 +3,21 @@
 <h1 align="center">7x Lyrics</h1>
 <p align="center"><b>by <a href="https://7xdevs.com">7X Devs</a></b></p>
 
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/c9hama/7x-Lyrics?label=version&color=F5A524" alt="Latest version"></a>
+  <a href="../../releases"><img src="https://img.shields.io/github/downloads/c9hama/7x-Lyrics/total?color=14213D" alt="Downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/c9hama/7x-Lyrics?color=14213D" alt="License: GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/Android%20Auto-ready-F5A524" alt="Android Auto">
+</p>
+
+<p align="center">
+  <a href="../../releases/latest"><b>⬇ Download the APK</b></a> &nbsp;·&nbsp;
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/c9hama/7x-Lyrics"><b>Get updates with Obtainium</b></a>
+</p>
+
 **Full-screen, time-synced lyrics for YouTube Music on your Android Auto car screen.**
+See lyrics in your car while you drive: an Android Auto lyrics app that follows YouTube Music,
+with karaoke-style highlighting and Arabic and Kurdish (right-to-left) support.
 
 The line being sung is big and bright, the lines around it fade into the colours of the album
 cover, and the whole thing scrolls in time with the song. Touch a line to jump there.
@@ -68,7 +82,8 @@ The next 5 songs in your queue are fetched ahead, so lyrics keep working in tunn
 
 ## Install
 
-1. **Download** the latest APK from [Releases](../../releases) and install it on your phone.
+1. **Download** the latest APK from [Releases](../../releases) and install it on your phone
+   (or add the repo to [Obtainium](https://github.com/ImranR98/Obtainium) for automatic updates).
 2. Open **7x Lyrics** and tap **Grant notification access** (used only to see what YouTube Music is playing).
 3. **Important:** scroll down and tap **Install for Android Auto**, then **Update**.
    Repeat this after every install or update, otherwise your car hides the app.
@@ -112,6 +127,17 @@ The DHU allows sideloaded apps that real cars hide, so always confirm in the car
 | `car/legacy/` | Legacy Android Auto entry point used in real cars |
 | `SyncEditorActivity.kt` | Tap-to-sync editor |
 | `car/DemoMode.kt` | Debug-only demo songs for screenshots |
+
+---
+
+## Contributing
+
+Bug reports, missing-lyrics reports and ideas are welcome in [Issues](../../issues) and
+[Discussions](../../discussions). Pull requests too; please open an issue first for bigger changes.
+
+## License
+
+[GPL-3.0](LICENSE). The Android Auto SDK (`aauto.aar`) is not part of this repository and keeps its own terms.
 
 ---
 

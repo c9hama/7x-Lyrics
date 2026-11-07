@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/c9hama/7x-Lyrics/discussions
+    about: Ask how something works or suggest a feature

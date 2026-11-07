@@ -1,0 +1,20 @@
+name: Song has no lyrics or wrong lyrics
+description: A song shows "No lyrics found", the wrong song, or badly timed lines
+labels: [lyrics]
+body:
+  - type: input
+    id: song
+    attributes: { label: Song title and artist, placeholder: "Viva La Vida - Coldplay" }
+    validations: { required: true }
+  - type: dropdown
+    id: problem
+    attributes:
+      label: What happens?
+      options: ["No lyrics found", "Lyrics for a different song", "Lyrics are early or late", "Other"]
+    validations: { required: true }
+  - type: input
+    id: link
+    attributes: { label: YouTube Music link (optional), description: "Share → Copy link in YouTube Music" }
+  - type: textarea
+    id: notes
+    attributes: { label: Anything else? }

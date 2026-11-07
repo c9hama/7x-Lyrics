@@ -1,0 +1,14 @@
+<p><b>7x Lyrics</b> shows full-screen, time-synced lyrics for whatever YouTube Music is playing, right on your Android Auto car screen.</p>
+<ul>
+<li>The sung line is big and bright; lines around it fade into the album cover's colours</li>
+<li>Optional karaoke highlight that sweeps across the current line</li>
+<li>Arabic, Kurdish and other right-to-left lyrics align and highlight from the right</li>
+<li>Touch the lyrics: drag to read ahead, tap a line to jump the song there</li>
+<li>YouTube Music controls: like, dislike, shuffle, repeat, seek</li>
+<li>Lyrics from your own synced files, YouTube Music, LRCLIB and LyricsTranslate</li>
+<li>Next 5 songs downloaded ahead for tunnels and dead zones</li>
+<li>Tap-to-sync editor for songs nobody has synced, plus per-song timing nudge</li>
+<li>♪ during intros and instrumental breaks</li>
+</ul>
+<p>Needs notification access (to see what YouTube Music is playing) and Android Auto "Unknown sources" enabled. After installing or updating, open the app and tap <b>Install for Android Auto</b> so your car shows it.</p>
+<p>Not affiliated with Google or YouTube.</p>
