@@ -13,6 +13,7 @@ import com.aalyrics.AppSettings
 import com.aalyrics.CrashLog
 import com.aalyrics.LyricsEngine
 import com.aalyrics.car.CarKeepAliveService
+import com.aalyrics.car.DemoMode
 import com.aalyrics.car.LyricsRenderer
 import com.aalyrics.source.NowPlayingTracker
 import com.google.android.apps.auto.sdk.CarActivity
@@ -108,7 +109,9 @@ class LegacyLyricsActivity : CarActivity() {
         setContentView(view)
 
         scope.launch {
-            combine(NowPlayingTracker.state, LyricsEngine.display, ::Pair).collect { (source, display) ->
+            // Debug builds can show made-up songs instead (README screenshots); see DemoMode.
+            val frames = DemoMode.wrap(this@LegacyLyricsActivity, combine(NowPlayingTracker.state, LyricsEngine.display, ::Pair))
+            frames.collect { (source, display) ->
                 try {
                     renderer.update(source, display)
                 } catch (e: Exception) {

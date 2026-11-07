@@ -72,6 +72,9 @@ class MainActivity : ComponentActivity() {
             isChecked = viewPrefs.getBoolean("moving_background", true)
             setOnCheckedChangeListener { _, on -> viewPrefs.edit().putBoolean("moving_background", on).apply() }
         }
+        findViewById<Button>(R.id.open_sync_editor).setOnClickListener {
+            startActivity(Intent(this, SyncEditorActivity::class.java))
+        }
         warningRow = findViewById(R.id.warning_row)
         syncSection = findViewById(R.id.sync_section)
         syncValue = findViewById(R.id.sync_value)

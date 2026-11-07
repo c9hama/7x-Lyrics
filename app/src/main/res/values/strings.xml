@@ -58,4 +58,24 @@
     <string name="size_medium">Medium</string>
     <string name="size_large">Large</string>
     <string name="moving_background_title">Moving background</string>
+    <string name="sync_editor_open">Sync lyrics for this song</string>
+    <string name="sync_editor_open_hint">For songs with no synced lyrics: tap along once and they\'re saved on your phone.</string>
+    <string name="sync_editor_title">Tap-to-sync</string>
+    <string name="sync_editor_no_song">Play a song first</string>
+    <string name="sync_editor_paste_hint">Paste or type the lyrics, one line per row. Then press Start and tap once as each line begins.</string>
+    <string name="sync_editor_start">Start (plays from the beginning)</string>
+    <string name="sync_editor_delete">Delete my synced lyrics for this song</string>
+    <string name="sync_editor_empty">Add the lyrics first</string>
+    <string name="sync_editor_progress">%1$d of %2$d lines</string>
+    <string name="sync_editor_tap_hint">Tap when this line starts</string>
+    <string name="sync_editor_break">Music break (singing stops)</string>
+    <string name="sync_editor_break_on">♪ Music break. Tap when the singing comes back.</string>
+    <string name="sync_editor_tap">Tap</string>
+    <string name="sync_editor_undo">Undo</string>
+    <string name="sync_editor_save">Save</string>
+    <string name="sync_editor_done">All lines timed. Save?</string>
+    <string name="sync_editor_saved">Saved. These lyrics are used from now on.</string>
+    <string name="sync_editor_link_hint">…or paste a lyricstranslate.com song link</string>
+    <string name="sync_editor_link_load">Load</string>
+    <string name="sync_editor_link_failed">Couldn\'t load lyrics from that link. Check it\'s a lyricstranslate.com song page.</string>
 </resources>

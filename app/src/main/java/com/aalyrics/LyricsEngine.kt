@@ -5,6 +5,7 @@ import android.media.MediaMetadata
 import android.media.session.PlaybackState
 import android.os.SystemClock
 import android.util.Log
+import com.aalyrics.lyrics.InstrumentalBreaks
 import com.aalyrics.lyrics.LrcLibHttpException
 import com.aalyrics.lyrics.LrcParser
 import com.aalyrics.lyrics.Lyrics
@@ -94,6 +95,9 @@ object LyricsEngine {
     val display: StateFlow<Display> = _display.asStateFlow()
     private var started = false
     private lateinit var settings: SyncSettings
+    /** Shared with the tap-to-sync editor, which saves the user's own lyrics through it. */
+    lateinit var repository: LyricsRepository
+        private set
     /** The playing song's lookup is running; prefetching waits so it never competes. */
     @Volatile private var foregroundLookup = false
 
@@ -102,6 +106,7 @@ object LyricsEngine {
         started = true
         CrashLog.install(context)
         val repo = LyricsRepository(context.applicationContext)
+        repository = repo
         settings = SyncSettings(context.applicationContext)
 
         scope.launch {
@@ -122,7 +127,7 @@ object LyricsEngine {
                     repeat(MAX_ATTEMPTS) { attempt ->
                         foregroundLookup = true
                         val status = try {
-                            Status.Ready(repo.find(latest.title, latest.artist, latest.durationMs))
+                            Status.Ready(repo.find(latest.title, latest.artist, latest.durationMs).withBreaks())
                         } catch (e: Exception) {
                             Status.Failed(e.message ?: "Network error")
                         } finally {
@@ -191,6 +196,24 @@ object LyricsEngine {
 
     /** Shifts the current song's lyrics; positive shows them earlier. Saved for next time. */
     fun nudge(deltaMs: Long) = setOffset(_display.value.offsetMs + deltaMs)
+
+    /** Adds ♪ lines at long instrumental gaps that the lyrics don't mark themselves. */
+    private fun Lyrics.withBreaks(): Lyrics =
+        if (this is Lyrics.Synced) copy(lines = InstrumentalBreaks.insert(lines)) else this
+
+    /** Looks the current song's lyrics up again (e.g. after the user saved their own). */
+    fun reload() {
+        val track = _display.value.track ?: return
+        if (!::repository.isInitialized) return
+        scope.launch {
+            val status = try {
+                Status.Ready(repository.find(track.title, track.artist, track.durationMs).withBreaks())
+            } catch (e: Exception) {
+                Status.Failed(e.message ?: "Network error")
+            }
+            _display.update { it.copy(status = status, lineIndex = -1) }
+        }
+    }
 
     fun resetOffset() = setOffset(0L)
 

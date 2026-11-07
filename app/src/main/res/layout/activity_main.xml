@@ -70,6 +70,20 @@
             android:alpha="0.5"
             android:textSize="20sp" />
 
+        <Button
+            android:id="@+id/open_sync_editor"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/sync_editor_open" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:alpha="0.6"
+            android:text="@string/sync_editor_open_hint"
+            android:textSize="13sp" />
+
         <LinearLayout
             android:id="@+id/warning_row"
             android:layout_width="match_parent"
